@@ -1,164 +1,351 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
+import { useUser } from "@clerk/nextjs";
 
-const CHANNELS = ["All", "Amazon", "Walmart", "Alibaba", "High Confidence", "Pending"] as const;
-type Channel = (typeof CHANNELS)[number];
+// ── Types ──────────────────────────────────────────────────────────────────────
 
-type Deal = {
+interface Deal {
   id: number;
-  rank: number;
-  product: string;
+  asin: string;
+  title: string;
   buyPrice: number;
   sellPrice: number;
+  profit: number;
+  margin: number;
   bsr: number;
-  channel: "Amazon" | "Walmart" | "Alibaba";
-  aiScore: number;
-  priceType: "Verified" | "Estimated";
-};
+  channel: string;
+  confidence: string;
+  verifiedPrice: boolean;
+  category: string;
+  timestamp: string;
+}
 
-const DEALS: Deal[] = [
-  { id: 1, rank: 1, product: "Sony WH-1000XM5 Headphones", buyPrice: 229.99, sellPrice: 348.00, bsr: 523, channel: "Amazon", aiScore: 94, priceType: "Verified" },
-  { id: 2, rank: 2, product: "Instant Pot Duo 7-in-1 6Qt", buyPrice: 49.95, sellPrice: 89.99, bsr: 1240, channel: "Walmart", aiScore: 88, priceType: "Verified" },
-  { id: 3, rank: 3, product: "Apple AirPods Pro (2nd Gen)", buyPrice: 189.00, sellPrice: 249.99, bsr: 340, channel: "Amazon", aiScore: 91, priceType: "Verified" },
-  { id: 4, rank: 4, product: "Dyson V15 Detect Vacuum", buyPrice: 449.00, sellPrice: 649.99, bsr: 2100, channel: "Amazon", aiScore: 82, priceType: "Estimated" },
-  { id: 5, rank: 5, product: "LEGO Technic McLaren F1", buyPrice: 89.00, sellPrice: 159.99, bsr: 5400, channel: "Alibaba", aiScore: 77, priceType: "Estimated" },
-  { id: 6, rank: 6, product: "Ninja Foodi 10-in-1 Pressure Cooker", buyPrice: 99.00, sellPrice: 169.95, bsr: 3200, channel: "Walmart", aiScore: 85, priceType: "Verified" },
-  { id: 7, rank: 7, product: "Samsung 65\" QLED 4K TV", buyPrice: 799.00, sellPrice: 1199.99, bsr: 8700, channel: "Amazon", aiScore: 79, priceType: "Estimated" },
-  { id: 8, rank: 8, product: "Anker 737 Power Bank 24000mAh", buyPrice: 69.99, sellPrice: 109.99, bsr: 920, channel: "Alibaba", aiScore: 93, priceType: "Verified" },
-  { id: 9, rank: 9, product: "KitchenAid Artisan Stand Mixer", buyPrice: 279.00, sellPrice: 449.99, bsr: 4300, channel: "Walmart", aiScore: 86, priceType: "Verified" },
-  { id: 10, rank: 10, product: "GoPro HERO12 Black Camera", buyPrice: 299.00, sellPrice: 399.99, bsr: 1850, channel: "Amazon", aiScore: 72, priceType: "Estimated" },
-  { id: 11, rank: 11, product: "Vitamix 5200 Blender", buyPrice: 349.00, sellPrice: 549.95, bsr: 9200, channel: "Alibaba", aiScore: 80, priceType: "Verified" },
-  { id: 12, rank: 12, product: "Weber Spirit II E-310 Grill", buyPrice: 449.00, sellPrice: 649.00, bsr: 12400, channel: "Walmart", aiScore: 75, priceType: "Estimated" },
-];
+interface DealsStats {
+  totalToday: number;
+  pendingCount: number;
+  avgMargin: number;
+  estTotalProfit: number;
+  channelBreakdown: { amazon: number; walmart: number; alibaba: number };
+}
 
-function profit(d: Deal) { return d.sellPrice - d.buyPrice; }
-function margin(d: Deal) { return ((profit(d) / d.buyPrice) * 100).toFixed(1); }
-
-const CHANNEL_COLORS: Record<string, { bg: string; text: string; dot: string }> = {
-  Amazon: { bg: "#FFF3E0", text: "#E65100", dot: "#FF6D00" },
-  Walmart: { bg: "#E3F2FD", text: "#0277BD", dot: "#0288D1" },
-  Alibaba: { bg: "#FCE4EC", text: "#C62828", dot: "#E53935" },
-};
-
-type ActivityEvent = {
+interface ActivityEvent {
   id: number;
-  type: "new" | "approved" | "skipped" | "alibaba";
+  type: "routing_decision" | "product_rejected" | "alibaba_forward" | "scan_start" | "unknown";
   product: string;
   time: string;
+  raw: string;
+}
+
+const CHANNELS = ["All", "Amazon", "Walmart", "Alibaba", "High Confidence", "Pending"] as const;
+type ChannelFilter = (typeof CHANNELS)[number];
+
+const CHANNEL_COLORS: Record<string, { bg: string; text: string; dot: string }> = {
+  amazon: { bg: "#FFF3E0", text: "#E65100", dot: "#FF6D00" },
+  walmart: { bg: "#E3F2FD", text: "#0277BD", dot: "#0288D1" },
+  alibaba: { bg: "#FCE4EC", text: "#C62828", dot: "#E53935" },
 };
 
-const INITIAL_ACTIVITY: ActivityEvent[] = [
-  { id: 1, type: "new", product: "Sony WH-1000XM5 Headphones", time: "2m ago" },
-  { id: 2, type: "approved", product: "Instant Pot Duo 7-in-1", time: "5m ago" },
-  { id: 3, type: "alibaba", product: "LEGO Technic McLaren F1", time: "8m ago" },
-  { id: 4, type: "new", product: "Apple AirPods Pro", time: "11m ago" },
-  { id: 5, type: "skipped", product: "Samsung 65\" QLED TV", time: "15m ago" },
-  { id: 6, type: "approved", product: "KitchenAid Stand Mixer", time: "18m ago" },
-  { id: 7, type: "new", product: "GoPro HERO12 Black", time: "22m ago" },
-  { id: 8, type: "alibaba", product: "Anker 737 Power Bank", time: "31m ago" },
-];
+// ── Helpers ────────────────────────────────────────────────────────────────────
 
-const ACTIVITY_TYPE_COLORS = {
-  new: { dot: "#3B82F6", label: "New deal", prefix: "🔵" },
-  approved: { dot: "#16A34A", label: "Approved", prefix: "🟢" },
-  skipped: { dot: "#EF4444", label: "Skipped", prefix: "🔴" },
-  alibaba: { dot: "#F59E0B", label: "Alibaba", prefix: "🟠" },
-};
+function relativeTime(ts: string): string {
+  const diff = Date.now() - new Date(ts).getTime();
+  const m = Math.floor(diff / 60000);
+  if (m < 1) return "just now";
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  return `${Math.floor(h / 24)}d ago`;
+}
+
+function formatLastUpdated(ms: number): string {
+  const m = Math.floor((Date.now() - ms) / 60000);
+  if (m < 1) return "just now";
+  return `${m} min ago`;
+}
+
+// ── Main component ─────────────────────────────────────────────────────────────
 
 export default function DashboardClient() {
-  const [activeFilter, setActiveFilter] = useState<Channel>("All");
-  const [skipped, setSkipped] = useState<Set<number>>(new Set());
-  const [bought, setBought] = useState<Set<number>>(new Set());
-  const [scanning, setScanning] = useState(false);
-  const [lastScan, setLastScan] = useState("2 min ago");
-  const [activity, setActivity] = useState<ActivityEvent[]>(INITIAL_ACTIVITY);
-  const [sortBy, setSortBy] = useState<"rank" | "aiScore" | "profit">("rank");
-  const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
-
+  const { user, isLoaded } = useUser();
+  const firstName = isLoaded ? (user?.firstName || user?.fullName?.split(" ")[0] || "there") : "";
+  const email = user?.primaryEmailAddress?.emailAddress ?? "";
   const hour = new Date().getHours();
   const greeting = hour < 12 ? "Good morning" : hour < 18 ? "Good afternoon" : "Good evening";
 
-  useEffect(() => {
-    const timer = setInterval(() => {
-      setActivity((prev) => {
-        const types: ActivityEvent["type"][] = ["new", "new", "approved", "alibaba"];
-        const products = ["Dyson V11 Vacuum", "Fitbit Sense 2", "Ninja Air Fryer XL", "Beats Studio Pro", "Logitech MX Keys"];
-        const newEvent: ActivityEvent = {
-          id: Date.now(),
-          type: types[Math.floor(Math.random() * types.length)],
-          product: products[Math.floor(Math.random() * products.length)],
-          time: "just now",
-        };
-        return [newEvent, ...prev.slice(0, 11)];
-      });
-    }, 8000);
-    return () => clearInterval(timer);
+  // Data state
+  const [deals, setDeals] = useState<Deal[]>([]);
+  const [stats, setStats] = useState<DealsStats | null>(null);
+  const [activity, setActivity] = useState<ActivityEvent[]>([]);
+  const [serverOnline, setServerOnline] = useState<boolean | null>(null);
+  const [dealsLoading, setDealsLoading] = useState(true);
+  const [statsLoading, setStatsLoading] = useState(true);
+  const [fetchError, setFetchError] = useState(false);
+  const [lastUpdated, setLastUpdated] = useState<number>(0);
+  const [, setTick] = useState(0);
+
+  // UI state
+  const [activeFilter, setActiveFilter] = useState<ChannelFilter>("All");
+  const [skipped, setSkipped] = useState<Set<string>>(new Set());
+  const [bought, setBought] = useState<Set<string>>(new Set());
+  const [actionLoading, setActionLoading] = useState<string | null>(null);
+  const [toast, setToast] = useState<{ msg: string; ok: boolean } | null>(null);
+  const [scanning, setScanning] = useState(false);
+  const [lastScan, setLastScan] = useState("—");
+  const [sortBy, setSortBy] = useState<"profit" | "margin" | "bsr">("profit");
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
+  const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // ── Fetch deals ──────────────────────────────────────────────────────────────
+
+  const fetchDeals = useCallback(async () => {
+    try {
+      const res = await fetch("/api/deals");
+      if (!res.ok) throw new Error("failed");
+      const data: Deal[] = await res.json();
+      setDeals(data);
+      setFetchError(false);
+      setLastUpdated(Date.now());
+    } catch {
+      setFetchError(true);
+    } finally {
+      setDealsLoading(false);
+    }
   }, []);
+
+  const fetchStats = useCallback(async () => {
+    try {
+      const res = await fetch("/api/deals/stats");
+      if (!res.ok) throw new Error("failed");
+      const data: DealsStats = await res.json();
+      setStats(data);
+    } catch {
+      // keep previous stats
+    } finally {
+      setStatsLoading(false);
+    }
+  }, []);
+
+  const checkHealth = useCallback(async () => {
+    try {
+      const res = await fetch("/api/health");
+      setServerOnline(res.ok);
+    } catch {
+      setServerOnline(false);
+    }
+  }, []);
+
+  const fetchActivity = useCallback(async () => {
+    try {
+      const res = await fetch("http://137.184.184.27:3004/events", {
+        signal: AbortSignal.timeout(4000),
+      });
+      if (!res.ok) throw new Error("failed");
+      const data: unknown = await res.json();
+      const events = Array.isArray(data) ? data : [];
+      setActivity(
+        events.slice(0, 20).map((e: unknown, idx: number) => {
+          const ev = e as Record<string, unknown>;
+          const d = (ev.data as Record<string, unknown>) || {};
+          return {
+            id: idx,
+            type: (ev.type as ActivityEvent["type"]) || "unknown",
+            product: (d.title as string) || (d.asin as string) || "Unknown product",
+            time: relativeTime((ev.timestamp as string) || new Date().toISOString()),
+            raw: ev.type as string,
+          };
+        })
+      );
+    } catch {
+      // keep existing activity if any
+    }
+  }, []);
+
+  // ── Mount & intervals ────────────────────────────────────────────────────────
+
+  useEffect(() => {
+    fetchDeals();
+    fetchStats();
+    checkHealth();
+    fetchActivity();
+
+    const dealsInterval = setInterval(() => { fetchDeals(); fetchStats(); }, 5 * 60 * 1000);
+    const healthInterval = setInterval(checkHealth, 60 * 1000);
+    const activityInterval = setInterval(fetchActivity, 30 * 1000);
+    const tickInterval = setInterval(() => setTick((t) => t + 1), 30 * 1000);
+
+    return () => {
+      clearInterval(dealsInterval);
+      clearInterval(healthInterval);
+      clearInterval(activityInterval);
+      clearInterval(tickInterval);
+    };
+  }, [fetchDeals, fetchStats, checkHealth, fetchActivity]);
+
+  // ── Toast helper ─────────────────────────────────────────────────────────────
+
+  function showToast(msg: string, ok: boolean) {
+    setToast({ msg, ok });
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    toastTimer.current = setTimeout(() => setToast(null), 3000);
+  }
+
+  // ── Actions ──────────────────────────────────────────────────────────────────
+
+  async function handleAction(asin: string, action: "buy" | "skip") {
+    setActionLoading(asin + action);
+    try {
+      const res = await fetch("/api/deals/action", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ asin, action }),
+      });
+      if (!res.ok) throw new Error("failed");
+      if (action === "buy") {
+        setBought((p) => new Set([...p, asin]));
+        showToast("Added to purchase list!", true);
+      } else {
+        setSkipped((p) => new Set([...p, asin]));
+        showToast("Deal skipped", false);
+      }
+    } catch {
+      showToast("Action failed — try again", false);
+    } finally {
+      setActionLoading(null);
+    }
+  }
 
   async function handleScan() {
     setScanning(true);
-    await new Promise((r) => setTimeout(r, 2200));
-    setScanning(false);
-    setLastScan("just now");
-    setActivity((prev) => [{
-      id: Date.now(),
-      type: "new",
-      product: "Scan complete — 3 new deals",
-      time: "just now",
-    }, ...prev.slice(0, 11)]);
+    try {
+      await fetch("http://137.184.184.27:3001/webhook", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ trigger: "manual_scan" }),
+        signal: AbortSignal.timeout(5000),
+      });
+    } catch { /* best-effort */ }
+    setTimeout(async () => {
+      await fetchDeals();
+      await fetchStats();
+      setScanning(false);
+      setLastScan("just now");
+    }, 3000);
   }
 
-  const filteredDeals = DEALS.filter((d) => {
-    if (activeFilter === "All") return true;
-    if (activeFilter === "High Confidence") return d.aiScore >= 88;
-    if (activeFilter === "Pending") return !bought.has(d.id) && !skipped.has(d.id);
-    return d.channel === activeFilter;
-  }).sort((a, b) => {
-    let av: number, bv: number;
-    if (sortBy === "profit") { av = profit(a); bv = profit(b); }
-    else if (sortBy === "aiScore") { av = a.aiScore; bv = b.aiScore; }
-    else { av = a.rank; bv = b.rank; }
-    return sortDir === "asc" ? av - bv : bv - av;
-  });
-
-  const totalProfit = DEALS.reduce((s, d) => s + profit(d), 0);
-  const avgMargin = DEALS.reduce((s, d) => s + parseFloat(margin(d)), 0) / DEALS.length;
-  const pendingCount = DEALS.filter((d) => !bought.has(d.id) && !skipped.has(d.id)).length;
-  const pendingInvestment = DEALS.filter((d) => !bought.has(d.id) && !skipped.has(d.id)).reduce((s, d) => s + d.buyPrice, 0);
-
-  const stats = [
-    { label: "Deals Today", value: DEALS.length.toString(), sub: "+3 vs yesterday", up: true, icon: "💼" },
-    { label: "Pending Purchases", value: pendingCount.toString(), sub: `$${pendingInvestment.toLocaleString("en-US", { maximumFractionDigits: 0 })} investment`, up: null, icon: "⏳" },
-    { label: "Avg Verified Margin", value: `${avgMargin.toFixed(1)}%`, sub: avgMargin > 25 ? "Above 25% target ✓" : "Below 25% target", up: avgMargin > 25, icon: "📈" },
-    { label: "Est. Total Profit", value: `$${totalProfit.toLocaleString("en-US", { maximumFractionDigits: 0 })}`, sub: "If all deals executed", up: true, icon: "💰" },
-  ];
-
-  function toggleSort(col: "rank" | "aiScore" | "profit") {
-    if (sortBy === col) setSortDir((d) => d === "asc" ? "desc" : "asc");
+  function toggleSort(col: "profit" | "margin" | "bsr") {
+    if (sortBy === col) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
     else { setSortBy(col); setSortDir("desc"); }
   }
 
+  // ── Filter & sort ────────────────────────────────────────────────────────────
+
+  const filteredDeals = deals
+    .filter((d) => {
+      if (bought.has(d.asin) || skipped.has(d.asin)) return false;
+      if (activeFilter === "All") return true;
+      if (activeFilter === "High Confidence") return d.confidence === "high";
+      if (activeFilter === "Pending") return true;
+      return d.channel.toLowerCase() === activeFilter.toLowerCase();
+    })
+    .sort((a, b) => {
+      const av = a[sortBy];
+      const bv = b[sortBy];
+      return sortDir === "asc" ? av - bv : bv - av;
+    });
+
+  // ── Stat cards ───────────────────────────────────────────────────────────────
+
+  const pendingInvestment = filteredDeals.reduce((s, d) => s + d.buyPrice, 0);
+  const statCards = [
+    {
+      label: "Deals Today",
+      value: statsLoading ? "…" : String(stats?.totalToday ?? 0),
+      sub: `${stats?.pendingCount ?? 0} pending`,
+      up: true,
+      icon: "💼",
+    },
+    {
+      label: "Pending Purchases",
+      value: statsLoading ? "…" : String(stats?.pendingCount ?? 0),
+      sub: `$${pendingInvestment.toLocaleString("en-US", { maximumFractionDigits: 0 })} investment`,
+      up: null,
+      icon: "⏳",
+    },
+    {
+      label: "Avg Verified Margin",
+      value: statsLoading ? "…" : `${stats?.avgMargin?.toFixed(1) ?? "0"}%`,
+      sub: (stats?.avgMargin ?? 0) > 25 ? "Above 25% target ✓" : "Below 25% target",
+      up: (stats?.avgMargin ?? 0) > 25,
+      icon: "📈",
+    },
+    {
+      label: "Est. Total Profit",
+      value: statsLoading
+        ? "…"
+        : `$${(stats?.estTotalProfit ?? 0).toLocaleString("en-US", { maximumFractionDigits: 0 })}`,
+      sub: "If all pending executed",
+      up: true,
+      icon: "💰",
+    },
+  ];
+
+  // ── Render ───────────────────────────────────────────────────────────────────
+
   return (
     <div className="p-5 lg:p-8">
+      {/* Toast */}
+      {toast && (
+        <div
+          className="fixed top-4 right-4 z-50 px-4 py-3 rounded-xl text-sm font-semibold shadow-lg transition-all"
+          style={{ background: toast.ok ? "#16A34A" : "#0D1B2A", color: "#fff" }}
+        >
+          {toast.msg}
+        </div>
+      )}
+
       {/* Top Bar */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-8">
         <div>
-          <h1 className="text-xl lg:text-2xl font-semibold" style={{ fontFamily: "var(--font-playfair), serif", color: "#0D1B2A" }}>
-            {greeting}, Alex
+          <h1
+            className="text-xl lg:text-2xl font-semibold"
+            style={{ fontFamily: "var(--font-playfair), serif", color: "#0D1B2A" }}
+          >
+            {greeting}{firstName ? `, ${firstName}` : ""}
           </h1>
-          <div className="flex items-center gap-3 mt-1">
-            <p className="text-sm text-gray-400">
-              Last scan: <span className="font-medium text-gray-600">{lastScan}</span>
-            </p>
+          <div className="flex items-center gap-3 mt-1 flex-wrap">
+            {email && <p className="text-xs text-gray-400">{email}</p>}
+            {lastScan !== "—" && (
+              <p className="text-sm text-gray-400">
+                Last scan: <span className="font-medium text-gray-600">{lastScan}</span>
+              </p>
+            )}
+            {lastUpdated > 0 && (
+              <p className="text-xs text-gray-400">
+                Updated: <span className="font-medium text-gray-600">{formatLastUpdated(lastUpdated)}</span>
+              </p>
+            )}
             {scanning && (
-              <span className="text-xs px-2.5 py-1 rounded-full font-medium animate-pulse" style={{ background: "#FFF3E0", color: "#E65100" }}>
+              <span
+                className="text-xs px-2.5 py-1 rounded-full font-medium animate-pulse"
+                style={{ background: "#FFF3E0", color: "#E65100" }}
+              >
                 Scanning…
               </span>
             )}
           </div>
         </div>
         <div className="flex items-center gap-3">
+          {/* Health indicator */}
+          <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-gray-200 bg-white text-xs font-medium">
+            <span
+              className={`w-2 h-2 rounded-full ${serverOnline === true ? "bg-green-500 animate-pulse" : serverOnline === false ? "bg-red-500" : "bg-gray-300"}`}
+            />
+            <span style={{ color: serverOnline === true ? "#16A34A" : serverOnline === false ? "#EF4444" : "#9CA3AF" }}>
+              {serverOnline === true ? "ArbitrAI Online" : serverOnline === false ? "ArbitrAI Offline" : "Checking…"}
+            </span>
+          </div>
+
           <button className="p-2.5 rounded-xl border border-gray-200 bg-white hover:bg-gray-50 transition relative">
             <BellIcon size={18} />
             <span className="absolute top-1 right-1 w-2 h-2 rounded-full" style={{ background: "#EF4444" }} />
@@ -169,23 +356,37 @@ export default function DashboardClient() {
             className="flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-semibold text-white transition-all hover:opacity-90 disabled:opacity-60"
             style={{ background: "linear-gradient(135deg, #B8922A 0%, #D4A843 100%)" }}
           >
-            {scanning ? (
-              <><SpinIcon size={16} /> Scanning…</>
-            ) : (
-              <><ScanIcon size={16} /> Run scan now</>
-            )}
+            {scanning ? <><SpinIcon size={16} /> Scanning…</> : <><ScanIcon size={16} /> Run scan now</>}
           </button>
         </div>
       </div>
 
+      {/* Error banner */}
+      {fetchError && (
+        <div
+          className="mb-6 px-4 py-3 rounded-xl text-sm font-medium border"
+          style={{ background: "#FFF3E0", color: "#E65100", borderColor: "#FBBF24" }}
+        >
+          ⚠️ Could not connect to ArbitrAI server. Showing cached data.
+        </div>
+      )}
+
       {/* Stats */}
       <div className="grid grid-cols-2 xl:grid-cols-4 gap-4 mb-8">
-        {stats.map((s) => (
-          <div key={s.label} className="rounded-2xl bg-white px-4 lg:px-5 py-5 border border-gray-100" style={{ boxShadow: "0 1px 12px 0 rgba(13,27,42,0.05)" }}>
+        {statCards.map((s) => (
+          <div
+            key={s.label}
+            className="rounded-2xl bg-white px-4 lg:px-5 py-5 border border-gray-100"
+            style={{ boxShadow: "0 1px 12px 0 rgba(13,27,42,0.05)" }}
+          >
             <div className="flex items-start justify-between">
               <div>
                 <p className="text-xs font-medium text-gray-400 uppercase tracking-wider mb-2">{s.label}</p>
-                <p className="text-xl lg:text-2xl font-semibold" style={{ color: "#0D1B2A" }}>{s.value}</p>
+                {statsLoading ? (
+                  <div className="h-7 w-20 rounded-lg bg-gray-200 animate-pulse" />
+                ) : (
+                  <p className="text-xl lg:text-2xl font-semibold" style={{ color: "#0D1B2A" }}>{s.value}</p>
+                )}
               </div>
               <span className="text-xl lg:text-2xl">{s.icon}</span>
             </div>
@@ -196,7 +397,7 @@ export default function DashboardClient() {
         ))}
       </div>
 
-      {/* Main content: table + activity feed */}
+      {/* Main content */}
       <div className="flex flex-col xl:flex-row gap-6">
         {/* Deal Pipeline */}
         <div className="flex-1 min-w-0">
@@ -219,27 +420,32 @@ export default function DashboardClient() {
             <span className="ml-auto text-xs text-gray-400">{filteredDeals.length} deals</span>
           </div>
 
-          <div className="rounded-2xl bg-white border border-gray-100 overflow-hidden" style={{ boxShadow: "0 1px 12px 0 rgba(13,27,42,0.05)" }}>
+          <div
+            className="rounded-2xl bg-white border border-gray-100 overflow-hidden"
+            style={{ boxShadow: "0 1px 12px 0 rgba(13,27,42,0.05)" }}
+          >
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b border-gray-100">
-                    {[
-                      { key: "rank", label: "#" },
-                      { key: null, label: "Product" },
-                      { key: null, label: "Buy $" },
-                      { key: null, label: "Sell $" },
-                      { key: "profit", label: "Profit" },
-                      { key: null, label: "Margin" },
-                      { key: null, label: "BSR" },
-                      { key: null, label: "Channel" },
-                      { key: "aiScore", label: "AI Score" },
-                      { key: null, label: "Type" },
-                      { key: null, label: "Actions" },
-                    ].map(({ key, label }) => (
+                    {(
+                      [
+                        { key: null, label: "#" },
+                        { key: null, label: "Product" },
+                        { key: null, label: "Buy $" },
+                        { key: null, label: "Sell $" },
+                        { key: "profit", label: "Profit" },
+                        { key: "margin", label: "Margin" },
+                        { key: "bsr", label: "BSR" },
+                        { key: null, label: "Channel" },
+                        { key: null, label: "Confidence" },
+                        { key: null, label: "Price" },
+                        { key: null, label: "Actions" },
+                      ] as { key: string | null; label: string }[]
+                    ).map(({ key, label }) => (
                       <th
                         key={label}
-                        onClick={() => key && toggleSort(key as "rank" | "aiScore" | "profit")}
+                        onClick={() => key && toggleSort(key as "profit" | "margin" | "bsr")}
                         className={`px-4 py-3.5 text-left text-xs font-semibold uppercase tracking-wider whitespace-nowrap ${key ? "cursor-pointer hover:text-gray-600 select-none" : ""}`}
                         style={{ color: "#9CA3AF" }}
                       >
@@ -252,72 +458,119 @@ export default function DashboardClient() {
                   </tr>
                 </thead>
                 <tbody>
-                  {filteredDeals.map((deal, i) => {
-                    const isBought = bought.has(deal.id);
-                    const isSkipped = skipped.has(deal.id);
-                    const p = profit(deal);
-                    const m = margin(deal);
-                    return (
-                      <tr
-                        key={deal.id}
-                        className="border-b border-gray-50 transition-colors hover:bg-gray-50/60"
-                        style={{ background: i % 2 === 1 ? "#FAFAFA" : "#fff", opacity: isSkipped ? 0.4 : 1 }}
-                      >
-                        <td className="px-4 py-3.5 text-xs text-gray-400 font-medium">{deal.rank}</td>
-                        <td className="px-4 py-3.5 font-medium max-w-48 whitespace-nowrap overflow-hidden text-ellipsis" style={{ color: "#0D1B2A" }}>
-                          {deal.product}
-                        </td>
-                        <td className="px-4 py-3.5 text-gray-600 whitespace-nowrap">${deal.buyPrice.toFixed(2)}</td>
-                        <td className="px-4 py-3.5 text-gray-600 whitespace-nowrap">${deal.sellPrice.toFixed(2)}</td>
-                        <td className="px-4 py-3.5 font-semibold text-green-600 whitespace-nowrap">+${p.toFixed(2)}</td>
-                        <td className="px-4 py-3.5 whitespace-nowrap">
-                          <span className="font-medium" style={{ color: "#B8922A" }}>{m}%</span>
-                        </td>
-                        <td className="px-4 py-3.5 text-gray-500 whitespace-nowrap">{deal.bsr.toLocaleString()}</td>
-                        <td className="px-4 py-3.5 whitespace-nowrap">
-                          <ChannelBadge channel={deal.channel} />
-                        </td>
-                        <td className="px-4 py-3.5 whitespace-nowrap">
-                          <ScoreBadge score={deal.aiScore} />
-                        </td>
-                        <td className="px-4 py-3.5 whitespace-nowrap">
-                          <PriceTypeBadge type={deal.priceType} />
-                        </td>
-                        <td className="px-4 py-3.5 whitespace-nowrap">
-                          <div className="flex items-center gap-1.5">
-                            {isBought ? (
-                              <span className="text-xs font-medium text-green-600 bg-green-50 px-2.5 py-1 rounded-full">✓ Bought</span>
-                            ) : isSkipped ? (
-                              <span className="text-xs font-medium text-gray-400 bg-gray-100 px-2.5 py-1 rounded-full">Skipped</span>
-                            ) : (
-                              <>
-                                <button
-                                  onClick={() => setBought((p) => new Set([...p, deal.id]))}
-                                  className="px-2.5 py-1 rounded-lg text-xs font-semibold text-white transition hover:opacity-90"
-                                  style={{ background: "#B8922A" }}
-                                >
-                                  Buy
-                                </button>
-                                <button
-                                  onClick={() => setSkipped((p) => new Set([...p, deal.id]))}
-                                  className="px-2.5 py-1 rounded-lg text-xs font-semibold border text-gray-400 border-gray-200 hover:bg-gray-50 transition"
-                                >
-                                  Skip
-                                </button>
-                              </>
-                            )}
-                          </div>
-                        </td>
-                      </tr>
-                    );
-                  })}
+                  {dealsLoading
+                    ? Array.from({ length: 8 }).map((_, i) => (
+                        <tr key={i} className="border-b border-gray-50" style={{ background: i % 2 === 1 ? "#FAFAFA" : "#fff" }}>
+                          {Array.from({ length: 11 }).map((__, j) => (
+                            <td key={j} className="px-4 py-3.5">
+                              <div
+                                className="h-4 rounded-md bg-gray-200 animate-pulse"
+                                style={{ width: j === 1 ? "140px" : j === 10 ? "80px" : "60px" }}
+                              />
+                            </td>
+                          ))}
+                        </tr>
+                      ))
+                    : filteredDeals.map((deal, i) => {
+                        const isActioning = actionLoading === deal.asin + "buy" || actionLoading === deal.asin + "skip";
+                        const isBought = bought.has(deal.asin);
+                        const isSkipped = skipped.has(deal.asin);
+                        const channelKey = deal.channel.toLowerCase();
+                        const channelColor = CHANNEL_COLORS[channelKey] ?? { bg: "#F5F5F5", text: "#616161", dot: "#9E9E9E" };
+                        return (
+                          <tr
+                            key={deal.id}
+                            className="border-b border-gray-50 transition-colors hover:bg-gray-50/60"
+                            style={{
+                              background: isBought ? "#F0FDF4" : i % 2 === 1 ? "#FAFAFA" : "#fff",
+                              opacity: isSkipped ? 0.4 : 1,
+                            }}
+                          >
+                            <td className="px-4 py-3.5 text-xs text-gray-400 font-medium">{i + 1}</td>
+                            <td className="px-4 py-3.5 max-w-48">
+                              <a
+                                href={`https://www.amazon.com/dp/${deal.asin}`}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="font-medium leading-snug hover:underline block truncate"
+                                style={{ color: "#0D1B2A" }}
+                                title={deal.title}
+                              >
+                                {deal.title}
+                              </a>
+                              <p className="text-[11px] text-gray-400 mt-0.5">{deal.asin}</p>
+                            </td>
+                            <td className="px-4 py-3.5 text-gray-600 whitespace-nowrap">${deal.buyPrice.toFixed(2)}</td>
+                            <td className="px-4 py-3.5 text-gray-600 whitespace-nowrap">${deal.sellPrice.toFixed(2)}</td>
+                            <td className="px-4 py-3.5 font-semibold text-green-600 whitespace-nowrap">+${deal.profit.toFixed(2)}</td>
+                            <td className="px-4 py-3.5 whitespace-nowrap">
+                              <span
+                                className="font-semibold"
+                                style={{
+                                  color: deal.margin >= 25 ? "#16A34A" : deal.margin >= 15 ? "#D97706" : "#EF4444",
+                                }}
+                              >
+                                {deal.margin.toFixed(1)}%
+                              </span>
+                            </td>
+                            <td className="px-4 py-3.5 text-gray-500 whitespace-nowrap">{deal.bsr.toLocaleString()}</td>
+                            <td className="px-4 py-3.5 whitespace-nowrap">
+                              <span
+                                className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium"
+                                style={{ background: channelColor.bg, color: channelColor.text }}
+                              >
+                                <span className="w-1.5 h-1.5 rounded-full" style={{ background: channelColor.dot }} />
+                                {deal.channel.charAt(0).toUpperCase() + deal.channel.slice(1)}
+                              </span>
+                            </td>
+                            <td className="px-4 py-3.5 whitespace-nowrap">
+                              <ConfidenceBadge confidence={deal.confidence} />
+                            </td>
+                            <td className="px-4 py-3.5 whitespace-nowrap">
+                              <PriceTypeBadge verified={deal.verifiedPrice} />
+                            </td>
+                            <td className="px-4 py-3.5 whitespace-nowrap">
+                              <div className="flex items-center gap-1.5">
+                                {isBought ? (
+                                  <span className="text-xs font-medium text-green-600 bg-green-50 px-2.5 py-1 rounded-full">✓ Bought</span>
+                                ) : isSkipped ? (
+                                  <span className="text-xs font-medium text-gray-400 bg-gray-100 px-2.5 py-1 rounded-full">Skipped</span>
+                                ) : (
+                                  <>
+                                    <button
+                                      onClick={() => handleAction(deal.asin, "buy")}
+                                      disabled={isActioning}
+                                      className="px-2.5 py-1 rounded-lg text-xs font-semibold text-white transition hover:opacity-90 disabled:opacity-50"
+                                      style={{ background: "#B8922A" }}
+                                    >
+                                      {isActioning ? "…" : "Buy"}
+                                    </button>
+                                    <button
+                                      onClick={() => handleAction(deal.asin, "skip")}
+                                      disabled={isActioning}
+                                      className="px-2.5 py-1 rounded-lg text-xs font-semibold border text-gray-400 border-gray-200 hover:bg-gray-50 transition disabled:opacity-50"
+                                    >
+                                      Skip
+                                    </button>
+                                  </>
+                                )}
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
                 </tbody>
               </table>
             </div>
-            {filteredDeals.length === 0 && (
+
+            {!dealsLoading && filteredDeals.length === 0 && (
               <div className="py-16 text-center">
                 <p className="text-gray-400 text-sm mb-2">No deals found for this filter.</p>
-                <button onClick={() => setActiveFilter("All")} className="text-sm font-medium" style={{ color: "#B8922A" }}>
+                <button
+                  onClick={() => setActiveFilter("All")}
+                  className="text-sm font-medium"
+                  style={{ color: "#B8922A" }}
+                >
                   Show all deals
                 </button>
               </div>
@@ -327,7 +580,10 @@ export default function DashboardClient() {
 
         {/* Activity Feed */}
         <div className="xl:w-72 shrink-0">
-          <div className="rounded-2xl bg-white border border-gray-100 overflow-hidden" style={{ boxShadow: "0 1px 12px 0 rgba(13,27,42,0.05)" }}>
+          <div
+            className="rounded-2xl bg-white border border-gray-100 overflow-hidden"
+            style={{ boxShadow: "0 1px 12px 0 rgba(13,27,42,0.05)" }}
+          >
             <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
               <h2 className="text-sm font-semibold" style={{ color: "#0D1B2A" }}>Live Activity</h2>
               <span className="flex items-center gap-1.5 text-xs font-medium text-green-600">
@@ -336,18 +592,43 @@ export default function DashboardClient() {
               </span>
             </div>
             <div className="divide-y divide-gray-50">
-              {activity.map((event) => {
-                const tc = ACTIVITY_TYPE_COLORS[event.type];
-                return (
-                  <div key={event.id} className="px-5 py-3.5 flex items-start gap-3">
-                    <span className="mt-0.5 w-2 h-2 rounded-full shrink-0" style={{ background: tc.dot }} />
-                    <div className="min-w-0 flex-1">
-                      <p className="text-xs font-medium leading-snug truncate" style={{ color: "#0D1B2A" }}>{event.product}</p>
-                      <p className="text-[11px] text-gray-400 mt-0.5">{tc.label} · {event.time}</p>
+              {activity.length === 0 ? (
+                <div className="px-5 py-8 text-center text-xs text-gray-400">No recent activity</div>
+              ) : (
+                activity.map((event) => {
+                  const dotColor =
+                    event.type === "routing_decision"
+                      ? "#3B82F6"
+                      : event.type === "product_rejected"
+                      ? "#EF4444"
+                      : event.type === "alibaba_forward"
+                      ? "#F59E0B"
+                      : "#16A34A";
+                  const label =
+                    event.type === "routing_decision"
+                      ? "Routed"
+                      : event.type === "product_rejected"
+                      ? "Rejected"
+                      : event.type === "alibaba_forward"
+                      ? "Alibaba"
+                      : event.type === "scan_start"
+                      ? "Scan"
+                      : "Event";
+                  return (
+                    <div key={event.id} className="px-5 py-3.5 flex items-start gap-3">
+                      <span className="mt-0.5 w-2 h-2 rounded-full shrink-0" style={{ background: dotColor }} />
+                      <div className="min-w-0 flex-1">
+                        <p className="text-xs font-medium leading-snug truncate" style={{ color: "#0D1B2A" }}>
+                          {event.product}
+                        </p>
+                        <p className="text-[11px] text-gray-400 mt-0.5">
+                          {label} · {event.time}
+                        </p>
+                      </div>
                     </div>
-                  </div>
-                );
-              })}
+                  );
+                })
+              )}
             </div>
           </div>
         </div>
@@ -356,33 +637,29 @@ export default function DashboardClient() {
   );
 }
 
-function ChannelBadge({ channel }: { channel: string }) {
-  const c = CHANNEL_COLORS[channel] ?? { bg: "#F5F5F5", text: "#616161", dot: "#9E9E9E" };
+// ── Sub-components ─────────────────────────────────────────────────────────────
+
+function ConfidenceBadge({ confidence }: { confidence: string }) {
+  const c = confidence.toLowerCase();
+  const color = c === "high" ? "#16A34A" : c === "medium" ? "#D97706" : "#6B7280";
+  const bg = c === "high" ? "#F0FDF4" : c === "medium" ? "#FFFBEB" : "#F9FAFB";
   return (
-    <span className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium whitespace-nowrap" style={{ background: c.bg, color: c.text }}>
-      <span className="w-1.5 h-1.5 rounded-full" style={{ background: c.dot }} />
-      {channel}
+    <span
+      className="inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-semibold whitespace-nowrap"
+      style={{ background: bg, color }}
+    >
+      ★ {c.charAt(0).toUpperCase() + c.slice(1)}
     </span>
   );
 }
 
-function ScoreBadge({ score }: { score: number }) {
-  const color = score >= 90 ? "#16A34A" : score >= 80 ? "#B8922A" : "#6B7280";
-  const bg = score >= 90 ? "#F0FDF4" : score >= 80 ? "#FFFBEB" : "#F9FAFB";
-  return (
-    <span className="inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-semibold whitespace-nowrap" style={{ background: bg, color }}>
-      ★ {score}
-    </span>
-  );
-}
-
-function PriceTypeBadge({ type }: { type: "Verified" | "Estimated" }) {
+function PriceTypeBadge({ verified }: { verified: boolean }) {
   return (
     <span
       className="inline-flex items-center rounded-full px-2 py-1 text-xs font-semibold whitespace-nowrap"
-      style={type === "Verified" ? { background: "#F0FDF4", color: "#16A34A" } : { background: "#FFFBEB", color: "#D97706" }}
+      style={verified ? { background: "#F0FDF4", color: "#16A34A" } : { background: "#FFFBEB", color: "#D97706" }}
     >
-      {type === "Verified" ? "✓" : "~"} {type}
+      {verified ? "✓ Verified" : "~ Estimated"}
     </span>
   );
 }
