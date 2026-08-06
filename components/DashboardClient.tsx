@@ -68,7 +68,7 @@ function formatLastUpdated(ms: number): string {
 
 export default function DashboardClient() {
   const { user, isLoaded } = useUser();
-  const firstName = isLoaded ? (user?.firstName || user?.fullName?.split(" ")[0] || "there") : "";
+  const firstName = isLoaded ? (user?.firstName || user?.fullName?.split(" ")[0] || user?.emailAddresses?.[0]?.emailAddress?.split("@")[0] || "there") : "";
   const email = user?.primaryEmailAddress?.emailAddress ?? "";
   const hour = new Date().getHours();
   const greeting = hour < 12 ? "Good morning" : hour < 18 ? "Good afternoon" : "Good evening";
@@ -137,9 +137,7 @@ export default function DashboardClient() {
 
   const fetchActivity = useCallback(async () => {
     try {
-      const res = await fetch("http://137.184.184.27:3004/events", {
-        signal: AbortSignal.timeout(4000),
-      });
+      const res = await fetch("/api/activity");
       if (!res.ok) throw new Error("failed");
       const data: unknown = await res.json();
       const events = Array.isArray(data) ? data : [];
