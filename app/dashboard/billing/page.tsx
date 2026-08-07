@@ -1,12 +1,14 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import { useUser } from "@clerk/nextjs";
 
 const PLANS = [
   {
-    name: "Starter",
+    name: "Solo",
+    priceId: "price_1U1vBNEkm3bbs6z6zN4sE4yS",
     price: 99,
-    current: true,
+    planKey: "solo",
     features: ["Up to 500 deals/day", "Amazon + Walmart", "Email alerts", "7-day history"],
     color: "#E5E7EB",
     textColor: "#6B7280",
@@ -14,8 +16,9 @@ const PLANS = [
   },
   {
     name: "Professional",
+    priceId: "price_1U1vCjEkm3bbs6z6MYO2It39",
     price: 199,
-    current: false,
+    planKey: "professional",
     features: ["Up to 2,000 deals/day", "All channels incl. Alibaba", "Telegram + Email", "30-day history", "Priority AI scoring", "API access"],
     color: "#B8922A",
     textColor: "#B8922A",
@@ -24,8 +27,9 @@ const PLANS = [
   },
   {
     name: "Agency",
+    priceId: "price_1U1vDYEkm3bbs6z6h2RtUp0E",
     price: 399,
-    current: false,
+    planKey: "agency",
     features: ["Unlimited deals/day", "All channels", "All alert types", "90-day history", "White-label reports", "Dedicated support", "Multi-account"],
     color: "#0D1B2A",
     textColor: "#0D1B2A",
@@ -39,33 +43,89 @@ const USAGE = [
   { label: "Channels Connected", used: 2, limit: 2, unit: "" },
 ];
 
-const INVOICES = [
-  { date: "Aug 1, 2026", amount: "$99.00", status: "Paid", id: "INV-0023" },
-  { date: "Jul 1, 2026", amount: "$99.00", status: "Paid", id: "INV-0022" },
-  { date: "Jun 1, 2026", amount: "$99.00", status: "Paid", id: "INV-0021" },
-  { date: "May 1, 2026", amount: "$99.00", status: "Paid", id: "INV-0020" },
-];
+interface Subscription {
+  plan: string;
+  status: string;
+  trial_ends_at: string | null;
+  current_period_end: string | null;
+  stripe_subscription_id: string | null;
+}
+
+function trialDaysRemaining(trialEndsAt: string | null): number | null {
+  if (!trialEndsAt) return null;
+  const diff = new Date(trialEndsAt).getTime() - Date.now();
+  const days = Math.ceil(diff / (1000 * 60 * 60 * 24));
+  return days > 0 ? days : null;
+}
+
+function formatDate(iso: string | null): string {
+  if (!iso) return "—";
+  return new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+}
 
 export default function BillingPage() {
+  const { user, isLoaded } = useUser();
+  const [subscription, setSubscription] = useState<Subscription | null>(null);
+  const [loadingSub, setLoadingSub] = useState(true);
   const [upgrading, setUpgrading] = useState<string | null>(null);
   const [toast, setToast] = useState<{ msg: string; ok: boolean } | null>(null);
 
-  async function handleUpgrade(plan: string) {
-    setUpgrading(plan);
-    await new Promise((r) => setTimeout(r, 1200));
-    setUpgrading(null);
-    setToast({ msg: `Stripe checkout would open for ${plan} plan`, ok: true });
-    setTimeout(() => setToast(null), 3500);
+  useEffect(() => {
+    if (!isLoaded) return;
+    fetch("/api/stripe/subscription")
+      .then((r) => r.json())
+      .then(({ subscription: sub }) => setSubscription(sub))
+      .catch(() => setSubscription(null))
+      .finally(() => setLoadingSub(false));
+  }, [isLoaded]);
+
+  async function handleUpgrade(plan: typeof PLANS[0]) {
+    if (!user) return;
+    setUpgrading(plan.name);
+    try {
+      const res = await fetch("/api/stripe/checkout", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          priceId: plan.priceId,
+          userId: user.id,
+          email: user.primaryEmailAddress?.emailAddress ?? "",
+        }),
+      });
+      const data = await res.json();
+      if (data.url) {
+        window.location.href = data.url;
+      } else {
+        setToast({ msg: data.error ?? "Something went wrong", ok: false });
+        setTimeout(() => setToast(null), 4000);
+      }
+    } catch {
+      setToast({ msg: "Failed to start checkout", ok: false });
+      setTimeout(() => setToast(null), 4000);
+    } finally {
+      setUpgrading(null);
+    }
   }
+
+  const activePlan = subscription?.plan ?? "free";
+  const isTrialing = subscription?.status === "trialing";
+  const trialDays = trialDaysRemaining(subscription?.trial_ends_at ?? null);
+
+  const currentPlanMeta = PLANS.find((p) => p.planKey === activePlan);
+  const renewsLabel = isTrialing && subscription?.trial_ends_at
+    ? `Trial ends ${formatDate(subscription.trial_ends_at)}`
+    : subscription?.current_period_end
+    ? `Renews ${formatDate(subscription.current_period_end)}`
+    : null;
 
   return (
     <div className="p-6 lg:p-8">
       {toast && (
         <div
           className="fixed top-4 right-4 z-50 px-4 py-3 rounded-xl text-sm font-medium shadow-lg"
-          style={{ background: "#0D1B2A", color: "#fff" }}
+          style={{ background: toast.ok ? "#0D1B2A" : "#EF4444", color: "#fff" }}
         >
-          ✓ {toast.msg}
+          {toast.ok ? "✓" : "✕"} {toast.msg}
         </div>
       )}
 
@@ -82,17 +142,42 @@ export default function BillingPage() {
           <div>
             <p className="text-xs font-medium text-gray-400 uppercase tracking-wider mb-1">Current Plan</p>
             <div className="flex items-center gap-3">
-              <h2 className="text-xl font-semibold" style={{ color: "#0D1B2A" }}>Starter</h2>
-              <span className="text-xs px-2.5 py-1 rounded-full font-medium" style={{ background: "#F0FDF4", color: "#16A34A" }}>Active</span>
+              <h2 className="text-xl font-semibold" style={{ color: "#0D1B2A" }}>
+                {loadingSub ? "Loading…" : currentPlanMeta?.name ?? "Free"}
+              </h2>
+              {!loadingSub && subscription && (
+                <span
+                  className="text-xs px-2.5 py-1 rounded-full font-medium"
+                  style={
+                    isTrialing
+                      ? { background: "#FEF3C7", color: "#D97706" }
+                      : { background: "#F0FDF4", color: "#16A34A" }
+                  }
+                >
+                  {isTrialing ? "Trialing" : subscription.status === "active" ? "Active" : subscription.status}
+                </span>
+              )}
             </div>
-            <p className="text-sm text-gray-400 mt-1">$99/month · Renews Sep 1, 2026</p>
+            {!loadingSub && (
+              <p className="text-sm text-gray-400 mt-1">
+                {currentPlanMeta ? `$${currentPlanMeta.price}/month` : "Free"}
+                {renewsLabel ? ` · ${renewsLabel}` : ""}
+              </p>
+            )}
+            {isTrialing && trialDays !== null && (
+              <p className="text-xs font-medium mt-1.5" style={{ color: "#D97706" }}>
+                {trialDays} day{trialDays !== 1 ? "s" : ""} remaining in trial
+              </p>
+            )}
           </div>
-          <button
-            className="text-sm text-red-400 hover:text-red-600 transition font-medium"
-            onClick={() => setToast({ msg: "Cancellation flow would open here", ok: true })}
-          >
-            Cancel subscription
-          </button>
+          {subscription?.stripe_subscription_id && (
+            <button
+              className="text-sm text-red-400 hover:text-red-600 transition font-medium"
+              onClick={() => setToast({ msg: "Manage subscription via Stripe customer portal", ok: true })}
+            >
+              Cancel subscription
+            </button>
+          )}
         </div>
 
         {/* Usage */}
@@ -122,53 +207,63 @@ export default function BillingPage() {
 
       {/* Pricing Cards */}
       <div className="mb-6">
-        <p className="text-sm font-semibold mb-4" style={{ color: "#0D1B2A" }}>Upgrade your plan</p>
+        <p className="text-sm font-semibold mb-4" style={{ color: "#0D1B2A" }}>
+          {activePlan === "free" ? "Choose a plan" : "Upgrade your plan"}
+        </p>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          {PLANS.map((plan) => (
-            <div
-              key={plan.name}
-              className="relative rounded-2xl border p-6 transition-all"
-              style={{
-                borderColor: plan.current ? plan.color : plan.name === "Professional" ? "#B8922A" : "#E5E7EB",
-                boxShadow: plan.name === "Professional" ? "0 4px 24px rgba(184,146,42,0.15)" : "0 1px 12px rgba(13,27,42,0.05)",
-                background: "#fff",
-              }}
-            >
-              {plan.badge && (
-                <div className="absolute -top-3 left-1/2 -translate-x-1/2 px-3 py-1 rounded-full text-xs font-semibold text-white" style={{ background: "#B8922A" }}>
-                  {plan.badge}
-                </div>
-              )}
-              {plan.current && (
-                <div className="absolute -top-3 left-1/2 -translate-x-1/2 px-3 py-1 rounded-full text-xs font-semibold" style={{ background: "#F3F4F6", color: "#6B7280" }}>
-                  Current
-                </div>
-              )}
-              <div className="mb-4">
-                <h3 className="text-base font-semibold" style={{ color: "#0D1B2A" }}>{plan.name}</h3>
-                <div className="flex items-end gap-1 mt-2">
-                  <span className="text-3xl font-bold" style={{ color: "#0D1B2A" }}>${plan.price}</span>
-                  <span className="text-sm text-gray-400 mb-1">/mo</span>
-                </div>
-              </div>
-              <ul className="space-y-2 mb-6">
-                {plan.features.map((f) => (
-                  <li key={f} className="flex items-start gap-2 text-sm text-gray-500">
-                    <span className="mt-0.5 shrink-0" style={{ color: "#16A34A" }}>✓</span>
-                    {f}
-                  </li>
-                ))}
-              </ul>
-              <button
-                onClick={() => !plan.current && handleUpgrade(plan.name)}
-                disabled={plan.current || upgrading === plan.name}
-                className="w-full py-2.5 rounded-xl text-sm font-semibold transition-all disabled:opacity-60"
-                style={plan.btnStyle as React.CSSProperties}
+          {PLANS.map((plan) => {
+            const isCurrent = plan.planKey === activePlan;
+            return (
+              <div
+                key={plan.name}
+                className="relative rounded-2xl border p-6 transition-all"
+                style={{
+                  borderColor: isCurrent ? plan.color : plan.name === "Professional" ? "#B8922A" : "#E5E7EB",
+                  boxShadow: plan.name === "Professional" ? "0 4px 24px rgba(184,146,42,0.15)" : "0 1px 12px rgba(13,27,42,0.05)",
+                  background: "#fff",
+                }}
               >
-                {plan.current ? "Current plan" : upgrading === plan.name ? "Loading…" : `Upgrade to ${plan.name}`}
-              </button>
-            </div>
-          ))}
+                {plan.badge && !isCurrent && (
+                  <div className="absolute -top-3 left-1/2 -translate-x-1/2 px-3 py-1 rounded-full text-xs font-semibold text-white" style={{ background: "#B8922A" }}>
+                    {plan.badge}
+                  </div>
+                )}
+                {isCurrent && (
+                  <div className="absolute -top-3 left-1/2 -translate-x-1/2 px-3 py-1 rounded-full text-xs font-semibold" style={{ background: "#F0FDF4", color: "#16A34A" }}>
+                    Current Plan
+                  </div>
+                )}
+                <div className="mb-4">
+                  <h3 className="text-base font-semibold" style={{ color: "#0D1B2A" }}>{plan.name}</h3>
+                  <div className="flex items-end gap-1 mt-2">
+                    <span className="text-3xl font-bold" style={{ color: "#0D1B2A" }}>${plan.price}</span>
+                    <span className="text-sm text-gray-400 mb-1">/mo</span>
+                  </div>
+                  <p className="text-xs text-gray-400 mt-1">14-day free trial</p>
+                </div>
+                <ul className="space-y-2 mb-6">
+                  {plan.features.map((f) => (
+                    <li key={f} className="flex items-start gap-2 text-sm text-gray-500">
+                      <span className="mt-0.5 shrink-0" style={{ color: "#16A34A" }}>✓</span>
+                      {f}
+                    </li>
+                  ))}
+                </ul>
+                <button
+                  onClick={() => !isCurrent && handleUpgrade(plan)}
+                  disabled={isCurrent || upgrading === plan.name || !isLoaded}
+                  className="w-full py-2.5 rounded-xl text-sm font-semibold transition-all disabled:opacity-60"
+                  style={isCurrent ? { background: "#F3F4F6", color: "#6B7280" } : (plan.btnStyle as React.CSSProperties)}
+                >
+                  {isCurrent
+                    ? "Current plan"
+                    : upgrading === plan.name
+                    ? "Redirecting…"
+                    : `Get started with ${plan.name}`}
+                </button>
+              </div>
+            );
+          })}
         </div>
       </div>
 
@@ -177,35 +272,8 @@ export default function BillingPage() {
         <div className="px-6 py-4 border-b border-gray-100 flex items-center justify-between">
           <h2 className="text-sm font-semibold" style={{ color: "#0D1B2A" }}>Invoice History</h2>
         </div>
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-gray-100">
-                {["Invoice", "Date", "Amount", "Status", ""].map((h) => (
-                  <th key={h} className="px-5 py-3.5 text-left text-xs font-semibold uppercase tracking-wider" style={{ color: "#9CA3AF" }}>{h}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {INVOICES.map((inv, i) => (
-                <tr key={inv.id} className="border-b border-gray-50" style={{ background: i % 2 === 1 ? "#FAFAFA" : "#fff" }}>
-                  <td className="px-5 py-3.5 font-mono text-xs text-gray-500">{inv.id}</td>
-                  <td className="px-5 py-3.5 text-gray-600">{inv.date}</td>
-                  <td className="px-5 py-3.5 font-medium" style={{ color: "#0D1B2A" }}>{inv.amount}</td>
-                  <td className="px-5 py-3.5">
-                    <span className="px-2.5 py-1 rounded-full text-xs font-medium" style={{ background: "#F0FDF4", color: "#16A34A" }}>
-                      {inv.status}
-                    </span>
-                  </td>
-                  <td className="px-5 py-3.5 text-right">
-                    <button className="text-xs font-medium transition" style={{ color: "#B8922A" }}>
-                      Download PDF
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+        <div className="px-6 py-10 text-center text-sm text-gray-400">
+          Invoices will appear here after your first payment.
         </div>
       </div>
     </div>
