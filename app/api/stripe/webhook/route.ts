@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import Stripe from "stripe";
-import { supabaseAdmin } from "@/lib/supabase";
+import { getSupabaseAdmin } from "@/lib/supabase";
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!);
 const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET!;
@@ -49,7 +49,7 @@ export async function POST(request: Request) {
         const priceId = sub.items.data[0]?.price?.id ?? "";
         const plan = planFromPriceId(priceId);
 
-        await supabaseAdmin.from("nexarb_subscriptions").upsert(
+        await getSupabaseAdmin().from("nexarb_subscriptions").upsert(
           {
             user_id: userId,
             email,
@@ -76,7 +76,7 @@ export async function POST(request: Request) {
 
         if (!userId) break;
 
-        await supabaseAdmin
+        await getSupabaseAdmin()
           .from("nexarb_subscriptions")
           .update({
             plan,
@@ -97,7 +97,7 @@ export async function POST(request: Request) {
 
         if (!userId) break;
 
-        await supabaseAdmin
+        await getSupabaseAdmin()
           .from("nexarb_subscriptions")
           .update({
             plan: "free",

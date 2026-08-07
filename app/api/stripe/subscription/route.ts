@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { auth } from "@clerk/nextjs/server";
-import { supabaseAdmin } from "@/lib/supabase";
+import { getSupabaseAdmin } from "@/lib/supabase";
 
 export async function GET() {
   try {
@@ -9,7 +9,7 @@ export async function GET() {
       return NextResponse.json({ subscription: null });
     }
 
-    const { data } = await supabaseAdmin
+    const { data } = await getSupabaseAdmin()
       .from("nexarb_subscriptions")
       .select("*")
       .eq("user_id", userId)
