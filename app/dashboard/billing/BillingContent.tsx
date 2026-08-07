@@ -1,7 +1,6 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { useUser } from "@clerk/nextjs";
 
 const PLANS = [
   {
@@ -11,7 +10,6 @@ const PLANS = [
     planKey: "solo",
     features: ["Up to 500 deals/day", "Amazon + Walmart", "Email alerts", "7-day history"],
     color: "#E5E7EB",
-    textColor: "#6B7280",
     btnStyle: { background: "#F3F4F6", color: "#374151" },
   },
   {
@@ -21,7 +19,6 @@ const PLANS = [
     planKey: "professional",
     features: ["Up to 2,000 deals/day", "All channels incl. Alibaba", "Telegram + Email", "30-day history", "Priority AI scoring", "API access"],
     color: "#B8922A",
-    textColor: "#B8922A",
     btnStyle: { background: "linear-gradient(135deg, #B8922A 0%, #D4A843 100%)", color: "#fff" },
     badge: "Most Popular",
   },
@@ -32,15 +29,14 @@ const PLANS = [
     planKey: "agency",
     features: ["Unlimited deals/day", "All channels", "All alert types", "90-day history", "White-label reports", "Dedicated support", "Multi-account"],
     color: "#0D1B2A",
-    textColor: "#0D1B2A",
     btnStyle: { background: "#0D1B2A", color: "#fff" },
   },
 ];
 
 const USAGE = [
-  { label: "Deals Scanned", used: 312, limit: 500, unit: "" },
-  { label: "API Calls", used: 4820, limit: 10000, unit: "" },
-  { label: "Channels Connected", used: 2, limit: 2, unit: "" },
+  { label: "Deals Scanned", used: 312, limit: 500 },
+  { label: "API Calls", used: 4820, limit: 10000 },
+  { label: "Channels Connected", used: 2, limit: 2 },
 ];
 
 interface Subscription {
@@ -53,8 +49,7 @@ interface Subscription {
 
 function trialDaysRemaining(trialEndsAt: string | null): number | null {
   if (!trialEndsAt) return null;
-  const diff = new Date(trialEndsAt).getTime() - Date.now();
-  const days = Math.ceil(diff / (1000 * 60 * 60 * 24));
+  const days = Math.ceil((new Date(trialEndsAt).getTime() - Date.now()) / 86400000);
   return days > 0 ? days : null;
 }
 
@@ -63,34 +58,27 @@ function formatDate(iso: string | null): string {
   return new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
 }
 
-export default function BillingPage() {
-  const { user, isLoaded } = useUser();
+export default function BillingContent() {
   const [subscription, setSubscription] = useState<Subscription | null>(null);
   const [loadingSub, setLoadingSub] = useState(true);
   const [upgrading, setUpgrading] = useState<string | null>(null);
   const [toast, setToast] = useState<{ msg: string; ok: boolean } | null>(null);
 
   useEffect(() => {
-    if (!isLoaded) return;
     fetch("/api/stripe/subscription")
       .then((r) => r.json())
-      .then(({ subscription: sub }) => setSubscription(sub))
+      .then(({ subscription: sub }) => setSubscription(sub ?? null))
       .catch(() => setSubscription(null))
       .finally(() => setLoadingSub(false));
-  }, [isLoaded]);
+  }, []);
 
-  async function handleUpgrade(plan: typeof PLANS[0]) {
-    if (!user) return;
+  async function handleUpgrade(plan: (typeof PLANS)[0]) {
     setUpgrading(plan.name);
     try {
       const res = await fetch("/api/stripe/checkout", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          priceId: plan.priceId,
-          userId: user.id,
-          email: user.primaryEmailAddress?.emailAddress ?? "",
-        }),
+        body: JSON.stringify({ priceId: plan.priceId }),
       });
       const data = await res.json();
       if (data.url) {
@@ -110,7 +98,6 @@ export default function BillingPage() {
   const activePlan = subscription?.plan ?? "free";
   const isTrialing = subscription?.status === "trialing";
   const trialDays = trialDaysRemaining(subscription?.trial_ends_at ?? null);
-
   const currentPlanMeta = PLANS.find((p) => p.planKey === activePlan);
   const renewsLabel = isTrialing && subscription?.trial_ends_at
     ? `Trial ends ${formatDate(subscription.trial_ends_at)}`
@@ -148,11 +135,7 @@ export default function BillingPage() {
               {!loadingSub && subscription && (
                 <span
                   className="text-xs px-2.5 py-1 rounded-full font-medium"
-                  style={
-                    isTrialing
-                      ? { background: "#FEF3C7", color: "#D97706" }
-                      : { background: "#F0FDF4", color: "#16A34A" }
-                  }
+                  style={isTrialing ? { background: "#FEF3C7", color: "#D97706" } : { background: "#F0FDF4", color: "#16A34A" }}
                 >
                   {isTrialing ? "Trialing" : subscription.status === "active" ? "Active" : subscription.status}
                 </span>
@@ -180,7 +163,6 @@ export default function BillingPage() {
           )}
         </div>
 
-        {/* Usage */}
         <div className="mt-6 pt-5 border-t border-gray-100 space-y-4">
           <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider">This Month&apos;s Usage</p>
           {USAGE.map((u) => (
@@ -188,12 +170,12 @@ export default function BillingPage() {
               <div className="flex justify-between text-xs mb-1.5">
                 <span className="text-gray-600">{u.label}</span>
                 <span className="font-semibold" style={{ color: "#0D1B2A" }}>
-                  {u.used.toLocaleString()}{u.unit} / {u.limit.toLocaleString()}{u.unit}
+                  {u.used.toLocaleString()} / {u.limit.toLocaleString()}
                 </span>
               </div>
               <div className="h-1.5 rounded-full bg-gray-100">
                 <div
-                  className="h-full rounded-full transition-all"
+                  className="h-full rounded-full"
                   style={{
                     width: `${Math.min((u.used / u.limit) * 100, 100)}%`,
                     background: u.used / u.limit > 0.8 ? "#EF4444" : u.used / u.limit > 0.6 ? "#F59E0B" : "#0D1B2A",
@@ -216,14 +198,14 @@ export default function BillingPage() {
             return (
               <div
                 key={plan.name}
-                className="relative rounded-2xl border p-6 transition-all"
+                className="relative rounded-2xl border p-6"
                 style={{
                   borderColor: isCurrent ? plan.color : plan.name === "Professional" ? "#B8922A" : "#E5E7EB",
                   boxShadow: plan.name === "Professional" ? "0 4px 24px rgba(184,146,42,0.15)" : "0 1px 12px rgba(13,27,42,0.05)",
                   background: "#fff",
                 }}
               >
-                {plan.badge && !isCurrent && (
+                {"badge" in plan && plan.badge && !isCurrent && (
                   <div className="absolute -top-3 left-1/2 -translate-x-1/2 px-3 py-1 rounded-full text-xs font-semibold text-white" style={{ background: "#B8922A" }}>
                     {plan.badge}
                   </div>
@@ -251,15 +233,11 @@ export default function BillingPage() {
                 </ul>
                 <button
                   onClick={() => !isCurrent && handleUpgrade(plan)}
-                  disabled={isCurrent || upgrading === plan.name || !isLoaded}
-                  className="w-full py-2.5 rounded-xl text-sm font-semibold transition-all disabled:opacity-60"
+                  disabled={isCurrent || upgrading === plan.name}
+                  className="w-full py-2.5 rounded-xl text-sm font-semibold disabled:opacity-60"
                   style={isCurrent ? { background: "#F3F4F6", color: "#6B7280" } : (plan.btnStyle as React.CSSProperties)}
                 >
-                  {isCurrent
-                    ? "Current plan"
-                    : upgrading === plan.name
-                    ? "Redirecting…"
-                    : `Get started with ${plan.name}`}
+                  {isCurrent ? "Current plan" : upgrading === plan.name ? "Redirecting…" : `Get started with ${plan.name}`}
                 </button>
               </div>
             );
@@ -269,7 +247,7 @@ export default function BillingPage() {
 
       {/* Invoice History */}
       <div className="bg-white rounded-2xl border border-gray-100 overflow-hidden" style={{ boxShadow: "0 1px 12px 0 rgba(13,27,42,0.05)" }}>
-        <div className="px-6 py-4 border-b border-gray-100 flex items-center justify-between">
+        <div className="px-6 py-4 border-b border-gray-100">
           <h2 className="text-sm font-semibold" style={{ color: "#0D1B2A" }}>Invoice History</h2>
         </div>
         <div className="px-6 py-10 text-center text-sm text-gray-400">
