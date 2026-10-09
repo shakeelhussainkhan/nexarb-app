@@ -1,16 +1,13 @@
-import { NextRequest, NextResponse } from "next/server";
 import { Resend } from "resend";
 
 const resend = new Resend(process.env.RESEND_API_KEY);
 
-export async function POST(req: NextRequest) {
-  try {
-    const { name, email } = await req.json();
-    if (!email) return NextResponse.json({ error: "Email required" }, { status: 400 });
+// Sends the NexArb welcome email. Called server-side only (from the verified
+// Clerk webhook) - there is intentionally no public HTTP route for this.
+export async function sendWelcomeEmail(name: string, email: string): Promise<void> {
+  const firstName = name?.split(" ")[0] || "there";
 
-    const firstName = name?.split(" ")[0] || "there";
-
-    const html = `
+  const html = `
 <!DOCTYPE html>
 <html>
 <head>
@@ -68,16 +65,10 @@ export async function POST(req: NextRequest) {
 </body>
 </html>`;
 
-    await resend.emails.send({
-      from: "NexArb <hello@nexarb.io>",
-      to: email,
-      subject: "Welcome to NexArb — your arbitrage engine is ready",
-      html,
-    });
-
-    return NextResponse.json({ ok: true });
-  } catch (err) {
-    const message = err instanceof Error ? err.message : "Email failed";
-    return NextResponse.json({ error: message }, { status: 500 });
-  }
+  await resend.emails.send({
+    from: "NexArb <hello@nexarb.io>",
+    to: email,
+    subject: "Welcome to NexArb — your arbitrage engine is ready",
+    html,
+  });
 }
