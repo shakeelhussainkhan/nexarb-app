@@ -11,7 +11,6 @@ const isPublicRoute = createRouteMatcher([
   '/api/user-chat-ids(.*)',
   '/api/stripe/webhook(.*)',
   '/api/clerk(.*)',
-  '/api/admin/migrate(.*)',
 ])
 
 export default clerkMiddleware(async (auth, request) => {
