@@ -24,9 +24,19 @@ export default function OnboardingPage() {
   const [minRoi, setMinRoi] = useState(30);
   const [maxBsr, setMaxBsr] = useState(50000);
 
+  async function saveStep(stepNum: number, data: Record<string, unknown>) {
+    try {
+      await fetch("/api/onboarding/save", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ step: stepNum, data }),
+      });
+    } catch { /* best-effort */ }
+  }
+
   async function handleFinish() {
     setSaving(true);
-    await new Promise((r) => setTimeout(r, 900));
+    await saveStep(3, { min_profit: minProfit, min_roi: minRoi, max_bsr: maxBsr });
     router.push("/dashboard");
   }
 
@@ -86,7 +96,10 @@ export default function OnboardingPage() {
             setMwsToken={setAmazonMwsAuthToken}
             marketplace={amazonMarketplace}
             setMarketplace={setAmazonMarketplace}
-            onNext={() => setStep(2)}
+            onNext={async () => {
+              await saveStep(1, { amz_seller_id: amazonSellerId, amz_mws_token: amazonMwsAuthToken, amz_marketplace: amazonMarketplace });
+              setStep(2);
+            }}
           />
         )}
         {step === 2 && (
@@ -96,7 +109,10 @@ export default function OnboardingPage() {
             clientSecret={walmartClientSecret}
             setClientSecret={setWalmartClientSecret}
             onBack={() => setStep(1)}
-            onNext={() => setStep(3)}
+            onNext={async () => {
+              await saveStep(2, { walmart_client_id: walmartClientId, walmart_secret: walmartClientSecret });
+              setStep(3);
+            }}
           />
         )}
         {step === 3 && (

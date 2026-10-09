@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { Inter, Playfair_Display } from "next/font/google";
+import { ClerkProvider } from "@clerk/nextjs";
 import "./globals.css";
 
 const inter = Inter({
@@ -13,21 +14,15 @@ const playfair = Playfair_Display({
 });
 
 export const metadata: Metadata = {
-  title: "NexArb — Arbitrage Intelligence",
-  description: "AI-powered cross-platform arbitrage deals",
+  title: {
+    default: "NexArb — Arbitrage Intelligence",
+    template: "%s",
+  },
+  description: "AI-powered cross-platform arbitrage deals — find profitable products across Amazon, Walmart, and Alibaba",
+  icons: {
+    icon: "/favicon.ico",
+  },
 };
-
-const hasClerkKey =
-  process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY?.startsWith("pk_") &&
-  !process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY?.includes("placeholder");
-
-async function Providers({ children }: { children: React.ReactNode }) {
-  if (hasClerkKey) {
-    const { ClerkProvider } = await import("@clerk/nextjs");
-    return <ClerkProvider>{children}</ClerkProvider>;
-  }
-  return <>{children}</>;
-}
 
 export default function RootLayout({
   children,
@@ -35,10 +30,12 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="en" className={`${inter.variable} ${playfair.variable} h-full`}>
-      <body className="min-h-full bg-white font-sans antialiased">
-        <Providers>{children}</Providers>
-      </body>
-    </html>
+    <ClerkProvider>
+      <html lang="en" className={`${inter.variable} ${playfair.variable} h-full`}>
+        <body className="min-h-full bg-white font-sans antialiased">
+          {children}
+        </body>
+      </html>
+    </ClerkProvider>
   );
 }

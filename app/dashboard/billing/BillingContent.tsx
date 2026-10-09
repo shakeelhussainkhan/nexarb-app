@@ -58,11 +58,25 @@ function formatDate(iso: string | null): string {
   return new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
 }
 
+interface Invoice {
+  id: string;
+  date: number;
+  amount: number;
+  currency: string;
+  status: string | null;
+  pdf_url: string | null;
+  invoice_url: string | null;
+  description: string;
+}
+
 export default function BillingContent() {
   const [subscription, setSubscription] = useState<Subscription | null>(null);
   const [loadingSub, setLoadingSub] = useState(true);
   const [upgrading, setUpgrading] = useState<string | null>(null);
   const [toast, setToast] = useState<{ msg: string; ok: boolean } | null>(null);
+  const [invoices, setInvoices] = useState<Invoice[]>([]);
+  const [loadingInvoices, setLoadingInvoices] = useState(true);
+  const [invoiceTrial, setInvoiceTrial] = useState(false);
 
   useEffect(() => {
     fetch("/api/stripe/subscription")
@@ -70,6 +84,15 @@ export default function BillingContent() {
       .then(({ subscription: sub }) => setSubscription(sub ?? null))
       .catch(() => setSubscription(null))
       .finally(() => setLoadingSub(false));
+
+    fetch("/api/stripe/invoices")
+      .then((r) => r.json())
+      .then((data) => {
+        setInvoices(data.invoices ?? []);
+        if (data.trial) setInvoiceTrial(true);
+      })
+      .catch(() => {})
+      .finally(() => setLoadingInvoices(false));
   }, []);
 
   async function handleUpgrade(plan: (typeof PLANS)[0]) {
@@ -250,9 +273,69 @@ export default function BillingContent() {
         <div className="px-6 py-4 border-b border-gray-100">
           <h2 className="text-sm font-semibold" style={{ color: "#0D1B2A" }}>Invoice History</h2>
         </div>
-        <div className="px-6 py-10 text-center text-sm text-gray-400">
-          Invoices will appear here after your first payment.
-        </div>
+        {loadingInvoices ? (
+          <div className="px-6 py-10 text-center text-sm text-gray-400">Loading invoices…</div>
+        ) : invoiceTrial ? (
+          <div className="px-6 py-10 text-center text-sm text-gray-400">Trial — no invoices yet</div>
+        ) : invoices.length === 0 ? (
+          <div className="px-6 py-10 text-center text-sm text-gray-400">Your invoices will appear here after your first payment.</div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-gray-100 text-left">
+                  <th className="px-6 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wider">Date</th>
+                  <th className="px-6 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wider">Description</th>
+                  <th className="px-6 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wider">Amount</th>
+                  <th className="px-6 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wider">Status</th>
+                  <th className="px-6 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wider">Download</th>
+                </tr>
+              </thead>
+              <tbody>
+                {invoices.map((inv) => (
+                  <tr key={inv.id} className="border-b border-gray-50 hover:bg-gray-50 transition">
+                    <td className="px-6 py-3 text-gray-600">
+                      {new Date(inv.date * 1000).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
+                    </td>
+                    <td className="px-6 py-3 text-gray-700 font-medium">{inv.description}</td>
+                    <td className="px-6 py-3 text-gray-700">
+                      {new Intl.NumberFormat("en-US", { style: "currency", currency: inv.currency.toUpperCase() }).format(inv.amount)}
+                    </td>
+                    <td className="px-6 py-3">
+                      <span
+                        className="px-2 py-1 rounded-full text-xs font-semibold"
+                        style={
+                          inv.status === "paid"
+                            ? { background: "#F0FDF4", color: "#16A34A" }
+                            : inv.status === "open"
+                            ? { background: "#FFFBEB", color: "#D97706" }
+                            : { background: "#F3F4F6", color: "#6B7280" }
+                        }
+                      >
+                        {inv.status === "paid" ? "Paid" : inv.status === "open" ? "Open" : "Void"}
+                      </span>
+                    </td>
+                    <td className="px-6 py-3">
+                      {inv.pdf_url ? (
+                        <a
+                          href={inv.pdf_url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-xs font-semibold hover:underline"
+                          style={{ color: "#B8922A" }}
+                        >
+                          PDF ↓
+                        </a>
+                      ) : (
+                        <span className="text-gray-300 text-xs">—</span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
     </div>
   );

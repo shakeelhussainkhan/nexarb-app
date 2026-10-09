@@ -2,34 +2,27 @@ import { SignIn } from "@clerk/nextjs";
 import type { Metadata } from "next";
 
 export const metadata: Metadata = {
-  title: "Sign in — NexArb",
-  description: "Sign in to your NexArb arbitrage dashboard",
+  title: "Reset password — NexArb",
+  description: "Reset your NexArb account password",
 };
 
-export default function LoginPage() {
+export default function ForgotPasswordPage() {
   return (
     <div
       style={{
         minHeight: "100vh",
         display: "flex",
-        flexDirection: "column",
         alignItems: "center",
         justifyContent: "center",
         background: "#ffffff",
-        gap: 16,
       }}
     >
       <SignIn
         routing="hash"
         forceRedirectUrl="/dashboard"
         signUpUrl="/signup"
+        initialValues={{ emailAddress: "" }}
       />
-      <a
-        href="/forgot-password"
-        style={{ color: "#B8922A", fontSize: 14, fontWeight: 500, textDecoration: "none" }}
-      >
-        Forgot password?
-      </a>
     </div>
   );
 }

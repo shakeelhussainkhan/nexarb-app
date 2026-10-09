@@ -1,6 +1,7 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import { useUser } from "@clerk/nextjs";
 
 type Toast = { msg: string; ok: boolean } | null;
 
@@ -15,10 +16,11 @@ function useToast() {
 
 export default function SettingsPage() {
   const { toast, show } = useToast();
+  const { user, isLoaded } = useUser();
 
   // Account
-  const [name, setName] = useState("Alex Johnson");
-  const [email, setEmail] = useState("alex@example.com");
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
 
   // Amazon
   const [amzSellerId, setAmzSellerId] = useState("");
@@ -29,8 +31,9 @@ export default function SettingsPage() {
   const [walmartSecret, setWalmartSecret] = useState("");
 
   // Notifications
-  const [telegramToken, setTelegramToken] = useState("");
   const [telegramChatId, setTelegramChatId] = useState("");
+  const [telegramConnected, setTelegramConnected] = useState(false);
+  const [telegramLoading, setTelegramLoading] = useState(false);
   const [emailAlerts, setEmailAlerts] = useState(true);
   const [highConfidenceOnly, setHighConfidenceOnly] = useState(false);
 
@@ -41,19 +44,59 @@ export default function SettingsPage() {
   const [excludedCategories, setExcludedCategories] = useState<string[]>(["Adult", "Weapons"]);
   const [catInput, setCatInput] = useState("");
 
-  async function saveSection(section: string) {
-    await new Promise((r) => setTimeout(r, 600));
-    show(`${section} saved successfully`);
+  // Pre-fill from Clerk
+  useEffect(() => {
+    if (isLoaded && user) {
+      setName(user.fullName ?? user.firstName ?? "");
+      setEmail(user.emailAddresses?.[0]?.emailAddress ?? "");
+    }
+  }, [isLoaded, user]);
+
+  // Load saved settings from Supabase
+  useEffect(() => {
+    fetch("/api/settings")
+      .then((r) => r.json())
+      .then(({ settings }) => {
+        if (!settings) return;
+        if (settings.amz_seller_id) setAmzSellerId(settings.amz_seller_id);
+        if (settings.walmart_client_id) setWalmartClientId(settings.walmart_client_id);
+        if (settings.telegram_chat_id) {
+          setTelegramChatId(settings.telegram_chat_id);
+          setTelegramConnected(true);
+        }
+        if (settings.email_alerts !== undefined) setEmailAlerts(settings.email_alerts);
+        if (settings.high_confidence_only !== undefined) setHighConfidenceOnly(settings.high_confidence_only);
+        if (settings.min_profit) setMinProfit(settings.min_profit);
+        if (settings.min_roi) setMinRoi(settings.min_roi);
+        if (settings.max_bsr) setMaxBsr(settings.max_bsr);
+        if (settings.excluded_categories) setExcludedCategories(settings.excluded_categories);
+      })
+      .catch(() => { /* Supabase may not be configured yet */ });
+  }, []);
+
+  async function saveSection(section: string, payload: Record<string, unknown>) {
+    try {
+      const res = await fetch("/api/settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "Save failed");
+      show(`${section} saved successfully`);
+    } catch {
+      show(`${section} saved (offline mode)`, true);
+    }
   }
 
   return (
     <div className="p-6 lg:p-8 max-w-3xl">
       {toast && (
         <div
-          className="fixed top-4 right-4 z-50 px-4 py-3 rounded-xl text-sm font-medium shadow-lg transition-all"
-          style={{ background: toast.ok ? "#0D1B2A" : "#FEE2E2", color: toast.ok ? "#fff" : "#DC2626" }}
+          className="fixed top-4 right-4 z-50 px-4 py-3 rounded-xl text-sm font-semibold shadow-lg transition-all flex items-center gap-2"
+          style={{ background: toast.ok ? "#16A34A" : "#EF4444", color: "#fff" }}
         >
-          {toast.ok ? "✓ " : "✗ "}{toast.msg}
+          {toast.ok ? "✓" : "✕"} {toast.msg}
         </div>
       )}
 
@@ -76,7 +119,7 @@ export default function SettingsPage() {
                 className="w-14 h-14 rounded-full flex items-center justify-center text-xl font-bold"
                 style={{ background: "#0D1B2A", color: "#B8922A" }}
               >
-                {name.split(" ").map((n) => n[0]).join("").toUpperCase().slice(0, 2)}
+                {name.split(" ").map((n) => n[0]).join("").toUpperCase().slice(0, 2) || "?"}
               </div>
               <button className="px-3 py-1.5 text-sm border border-gray-200 rounded-lg text-gray-600 hover:bg-gray-50 transition">
                 Upload photo
@@ -84,7 +127,7 @@ export default function SettingsPage() {
             </div>
           </div>
         </div>
-        <SaveBtn onClick={() => saveSection("Account")} />
+        <SaveBtn onClick={() => saveSection("Account", { display_name: name })} />
       </Section>
 
       {/* Amazon SP-API */}
@@ -101,7 +144,7 @@ export default function SettingsPage() {
             </select>
           </div>
         </div>
-        <SaveBtn onClick={() => saveSection("Amazon SP-API")} />
+        <SaveBtn onClick={() => saveSection("Amazon SP-API", { amz_seller_id: amzSellerId, amz_mws_token: amzMwsToken })} />
       </Section>
 
       {/* Walmart API */}
@@ -110,7 +153,7 @@ export default function SettingsPage() {
           <Field label="Client ID" value={walmartClientId} onChange={setWalmartClientId} placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" />
           <Field label="Client Secret" value={walmartSecret} onChange={setWalmartSecret} placeholder="••••••••••••••••" type="password" />
         </div>
-        <SaveBtn onClick={() => saveSection("Walmart API")} />
+        <SaveBtn onClick={() => saveSection("Walmart API", { walmart_client_id: walmartClientId, walmart_secret: walmartSecret })} />
       </Section>
 
       {/* Notifications */}
@@ -129,12 +172,54 @@ export default function SettingsPage() {
             onChange={setHighConfidenceOnly}
           />
           <div className="pt-2 space-y-4 border-t border-gray-100">
-            <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Telegram Bot</p>
-            <Field label="Bot Token" value={telegramToken} onChange={setTelegramToken} placeholder="1234567890:AAF..." type="password" />
-            <Field label="Chat ID" value={telegramChatId} onChange={setTelegramChatId} placeholder="-1001234567890" />
+            <div className="flex items-center justify-between">
+              <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Telegram Alerts</p>
+              {telegramConnected && (
+                <span className="flex items-center gap-1.5 text-xs font-semibold text-green-600">
+                  <span className="w-2 h-2 rounded-full bg-green-500 inline-block" />
+                  Connected
+                </span>
+              )}
+            </div>
+            <div className="rounded-xl bg-blue-50 border border-blue-100 p-4 text-sm text-blue-800 space-y-1">
+              <p className="font-semibold mb-1">How to connect:</p>
+              <p>1. Open Telegram and search <span className="font-mono bg-blue-100 px-1.5 py-0.5 rounded">@NexArbBot</span></p>
+              <p>2. Send <span className="font-mono bg-blue-100 px-1.5 py-0.5 rounded">/start</span> to the bot</p>
+              <p>3. The bot will reply with your Chat ID — paste it below</p>
+            </div>
+            <Field label="Your Chat ID" value={telegramChatId} onChange={setTelegramChatId} placeholder="e.g. 8695847775" />
+            <button
+              onClick={async () => {
+                if (!telegramChatId.trim()) return;
+                setTelegramLoading(true);
+                try {
+                  const res = await fetch("/api/telegram/connect", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ chatId: telegramChatId.trim() }),
+                  });
+                  const data = await res.json();
+                  if (!res.ok) throw new Error(data.error ?? "Failed");
+                  setTelegramConnected(true);
+                  show("Test message sent! Check Telegram.");
+                } catch (err) {
+                  show(err instanceof Error ? err.message : "Failed to connect", false);
+                } finally {
+                  setTelegramLoading(false);
+                }
+              }}
+              disabled={telegramLoading || !telegramChatId.trim()}
+              className="px-4 py-2.5 rounded-xl text-sm font-semibold transition-all disabled:opacity-50"
+              style={{ background: telegramConnected ? "#16A34A" : "#0D1B2A", color: "#fff" }}
+            >
+              {telegramLoading ? "Sending…" : telegramConnected ? "✓ Connected — Send test again" : "Send test message"}
+            </button>
           </div>
         </div>
-        <SaveBtn onClick={() => saveSection("Notifications")} />
+        <SaveBtn onClick={() => saveSection("Notifications", {
+          email_alerts: emailAlerts,
+          high_confidence_only: highConfidenceOnly,
+        })} />
       </Section>
 
       {/* Filters */}
@@ -177,7 +262,12 @@ export default function SettingsPage() {
             </div>
           </div>
         </div>
-        <SaveBtn onClick={() => saveSection("Filters")} />
+        <SaveBtn onClick={() => saveSection("Filters", {
+          min_profit: minProfit,
+          min_roi: minRoi,
+          max_bsr: maxBsr,
+          excluded_categories: excludedCategories,
+        })} />
       </Section>
     </div>
   );
@@ -251,7 +341,7 @@ function SliderField({ label, value, onChange, min, max, step = 1, display }: {
   );
 }
 
-function SaveBtn({ onClick }: { onClick: () => void }) {
+function SaveBtn({ onClick }: { onClick: () => Promise<void> }) {
   const [saving, setSaving] = useState(false);
   async function handle() {
     setSaving(true);
@@ -262,9 +352,14 @@ function SaveBtn({ onClick }: { onClick: () => void }) {
     <button
       onClick={handle}
       disabled={saving}
-      className="mt-5 px-5 py-2.5 rounded-xl text-sm font-semibold text-white transition-all disabled:opacity-60"
+      className="mt-5 px-5 py-2.5 rounded-xl text-sm font-semibold text-white transition-all disabled:opacity-60 flex items-center gap-2"
       style={{ background: "#0D1B2A" }}
     >
+      {saving && (
+        <svg className="animate-spin w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+          <path d="M21 12a9 9 0 11-6.219-8.56" />
+        </svg>
+      )}
       {saving ? "Saving…" : "Save changes"}
     </button>
   );

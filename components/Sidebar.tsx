@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useState } from "react";
+import { useUser, useClerk } from "@clerk/nextjs";
 
 const navItems = [
   { label: "Dashboard", href: "/dashboard", icon: GridIcon },
@@ -10,15 +11,28 @@ const navItems = [
   { label: "Analytics", href: "/dashboard/analytics", icon: ChartIcon },
   { label: "Settings", href: "/dashboard/settings", icon: GearIcon },
   { label: "Billing", href: "/dashboard/billing", icon: CardIcon },
+  { label: "Blog", href: "/blog", icon: BookIcon },
+  { label: "Affiliates", href: "/affiliate", icon: UsersIcon },
 ];
 
 export default function Sidebar() {
   const pathname = usePathname();
   const router = useRouter();
   const [open, setOpen] = useState(false);
+  const { user } = useUser();
+  const { signOut } = useClerk();
+
+  const displayName = user?.fullName ?? user?.firstName ?? user?.emailAddresses?.[0]?.emailAddress ?? "";
+  const displayEmail = user?.emailAddresses?.[0]?.emailAddress ?? "";
+  const initials = displayName
+    .split(" ")
+    .map((n) => n[0])
+    .join("")
+    .toUpperCase()
+    .slice(0, 2) || "?";
 
   function handleSignOut() {
-    router.push("/login");
+    signOut(() => router.push("/login"));
   }
 
   const nav = (
@@ -49,11 +63,11 @@ export default function Sidebar() {
       <div className="h-px bg-white/10 mb-3 mx-3" />
       <div className="flex items-center gap-3 px-3 py-2.5">
         <div className="w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold" style={{ background: "#B8922A", color: "#0D1B2A" }}>
-          A
+          {initials}
         </div>
         <div className="min-w-0">
-          <p className="text-xs font-medium text-white truncate">Alex Johnson</p>
-          <p className="text-[10px] truncate" style={{ color: "rgba(255,255,255,0.4)" }}>alex@example.com</p>
+          <p className="text-xs font-medium text-white truncate">{displayName}</p>
+          <p className="text-[10px] truncate" style={{ color: "rgba(255,255,255,0.4)" }}>{displayEmail}</p>
         </div>
       </div>
       <button
@@ -195,6 +209,23 @@ function XIcon({ size = 20 }: { size?: number }) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
+    </svg>
+  );
+}
+
+function BookIcon({ size = 16 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M4 19.5A2.5 2.5 0 016.5 17H20" /><path d="M6.5 2H20v20H6.5A2.5 2.5 0 014 19.5v-15A2.5 2.5 0 016.5 2z" />
+    </svg>
+  );
+}
+
+function UsersIcon({ size = 16 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2" /><circle cx="9" cy="7" r="4" />
+      <path d="M23 21v-2a4 4 0 00-3-3.87" /><path d="M16 3.13a4 4 0 010 7.75" />
     </svg>
   );
 }

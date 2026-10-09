@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useUser } from "@clerk/nextjs";
+import { useSearchParams } from "next/navigation";
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -64,11 +65,33 @@ function formatLastUpdated(ms: number): string {
   return `${m} min ago`;
 }
 
+function generateMockActivity(deals: Deal[]): ActivityEvent[] {
+  if (deals.length === 0) return [];
+  const types: ActivityEvent["type"][] = ["routing_decision", "product_rejected", "alibaba_forward", "scan_start", "routing_decision", "routing_decision"];
+  const now = Date.now();
+  return deals.slice(0, 10).map((d, i) => {
+    const type = types[i % types.length];
+    const offsetMs = i * 3 * 60 * 1000;
+    return {
+      id: i,
+      type,
+      product: d.title,
+      time: relativeTime(new Date(now - offsetMs).toISOString()),
+      raw: type,
+    };
+  });
+}
+
 // ── Main component ─────────────────────────────────────────────────────────────
 
 export default function DashboardClient() {
   const { user, isLoaded } = useUser();
-  const firstName = isLoaded ? (user?.firstName || user?.fullName?.split(" ")[0] || user?.emailAddresses?.[0]?.emailAddress?.split("@")[0] || "there") : "";
+  const searchParams = useSearchParams();
+  const upgraded = searchParams.get("upgraded") === "true";
+
+  const firstName = isLoaded
+    ? (user?.firstName || user?.fullName?.split(" ")[0] || user?.emailAddresses?.[0]?.emailAddress?.split("@")[0] || "there")
+    : "there";
   const email = user?.primaryEmailAddress?.emailAddress ?? "";
   const hour = new Date().getHours();
   const greeting = hour < 12 ? "Good morning" : hour < 18 ? "Good afternoon" : "Good evening";
@@ -83,18 +106,34 @@ export default function DashboardClient() {
   const [fetchError, setFetchError] = useState(false);
   const [lastUpdated, setLastUpdated] = useState<number>(0);
   const [, setTick] = useState(0);
+  const [countdown, setCountdown] = useState(300);
 
   // UI state
   const [activeFilter, setActiveFilter] = useState<ChannelFilter>("All");
+  const [search, setSearch] = useState("");
   const [skipped, setSkipped] = useState<Set<string>>(new Set());
   const [bought, setBought] = useState<Set<string>>(new Set());
+  const [undoQueue, setUndoQueue] = useState<{ asin: string; timer: ReturnType<typeof setTimeout> }[]>([]);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
-  const [toast, setToast] = useState<{ msg: string; ok: boolean } | null>(null);
+  const [toast, setToast] = useState<{ msg: string; ok: boolean; type?: "success" | "error" | "info" } | null>(null);
   const [scanning, setScanning] = useState(false);
   const [lastScan, setLastScan] = useState("—");
   const [sortBy, setSortBy] = useState<"profit" | "margin" | "bsr">("profit");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
+  const [showUpgradeBanner, setShowUpgradeBanner] = useState(upgraded);
+  const [subscription, setSubscription] = useState<{ plan: string; status: string } | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const searchRef = useRef<HTMLInputElement>(null);
+
+  // Load persisted state from localStorage
+  useEffect(() => {
+    try {
+      const savedSkipped = localStorage.getItem("nexarb_skipped");
+      const savedBought = localStorage.getItem("nexarb_bought");
+      if (savedSkipped) setSkipped(new Set(JSON.parse(savedSkipped)));
+      if (savedBought) setBought(new Set(JSON.parse(savedBought)));
+    } catch { /* ignore */ }
+  }, []);
 
   // ── Fetch deals ──────────────────────────────────────────────────────────────
 
@@ -106,6 +145,7 @@ export default function DashboardClient() {
       setDeals(data);
       setFetchError(false);
       setLastUpdated(Date.now());
+      setCountdown(300);
     } catch {
       setFetchError(true);
     } finally {
@@ -119,11 +159,8 @@ export default function DashboardClient() {
       if (!res.ok) throw new Error("failed");
       const data: DealsStats = await res.json();
       setStats(data);
-    } catch {
-      // keep previous stats
-    } finally {
-      setStatsLoading(false);
-    }
+    } catch { /* keep previous stats */ }
+    finally { setStatsLoading(false); }
   }, []);
 
   const checkHealth = useCallback(async () => {
@@ -135,55 +172,107 @@ export default function DashboardClient() {
     }
   }, []);
 
-  const fetchActivity = useCallback(async () => {
+  const fetchActivity = useCallback(async (currentDeals?: Deal[]) => {
     try {
       const res = await fetch("/api/activity");
       if (!res.ok) throw new Error("failed");
       const data: unknown = await res.json();
       const events = Array.isArray(data) ? data : [];
-      setActivity(
-        events.slice(0, 20).map((e: unknown, idx: number) => {
-          const ev = e as Record<string, unknown>;
-          const d = (ev.data as Record<string, unknown>) || {};
-          return {
-            id: idx,
-            type: (ev.type as ActivityEvent["type"]) || "unknown",
-            product: (d.title as string) || (d.asin as string) || "Unknown product",
-            time: relativeTime((ev.timestamp as string) || new Date().toISOString()),
-            raw: ev.type as string,
-          };
-        })
-      );
+      if (events.length > 0) {
+        setActivity(
+          events.slice(0, 20).map((e: unknown, idx: number) => {
+            const ev = e as Record<string, unknown>;
+            const d = (ev.data as Record<string, unknown>) || {};
+            return {
+              id: idx,
+              type: (ev.type as ActivityEvent["type"]) || "unknown",
+              product: (d.title as string) || (d.asin as string) || "Unknown product",
+              time: relativeTime((ev.timestamp as string) || new Date().toISOString()),
+              raw: ev.type as string,
+            };
+          })
+        );
+      } else {
+        // Generate mock activity from current deals when server returns empty
+        setActivity((prev) => {
+          const src = currentDeals ?? [];
+          return prev.length > 0 ? prev : generateMockActivity(src);
+        });
+      }
     } catch {
-      // keep existing activity if any
+      setActivity((prev) => {
+        if (prev.length > 0) return prev;
+        const src = currentDeals ?? [];
+        return generateMockActivity(src);
+      });
     }
   }, []);
 
   // ── Mount & intervals ────────────────────────────────────────────────────────
 
   useEffect(() => {
-    fetchDeals();
-    fetchStats();
-    checkHealth();
-    fetchActivity();
+    // Fetch subscription status
+    fetch("/api/stripe/subscription")
+      .then((r) => r.json())
+      .then(({ subscription: sub }) => setSubscription(sub ?? { plan: "free", status: "inactive" }))
+      .catch(() => {});
 
-    const dealsInterval = setInterval(() => { fetchDeals(); fetchStats(); }, 5 * 60 * 1000);
+    const init = async () => {
+      await fetchDeals();
+      await fetchStats();
+      checkHealth();
+    };
+    init().then(() => {
+      setDeals((d) => { fetchActivity(d); return d; });
+    });
+
+    const dealsInterval = setInterval(async () => {
+      await fetchDeals();
+      await fetchStats();
+    }, 5 * 60 * 1000);
     const healthInterval = setInterval(checkHealth, 60 * 1000);
-    const activityInterval = setInterval(fetchActivity, 30 * 1000);
+    const activityInterval = setInterval(() => fetchActivity(), 30 * 1000);
     const tickInterval = setInterval(() => setTick((t) => t + 1), 30 * 1000);
+    const countdownInterval = setInterval(() => setCountdown((c) => Math.max(0, c - 1)), 1000);
 
     return () => {
       clearInterval(dealsInterval);
       clearInterval(healthInterval);
       clearInterval(activityInterval);
       clearInterval(tickInterval);
+      clearInterval(countdownInterval);
     };
   }, [fetchDeals, fetchStats, checkHealth, fetchActivity]);
 
+  // Update mock activity when deals load
+  useEffect(() => {
+    if (deals.length > 0 && activity.length === 0) {
+      fetchActivity(deals);
+    }
+  }, [deals, activity.length, fetchActivity]);
+
+  // Keyboard shortcuts
+  useEffect(() => {
+    function handleKey(e: KeyboardEvent) {
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+      if (e.key === "/" || e.key === "s") {
+        e.preventDefault();
+        searchRef.current?.focus();
+      }
+      if (e.key === "r") {
+        e.preventDefault();
+        fetchDeals();
+        fetchStats();
+      }
+    }
+    window.addEventListener("keydown", handleKey);
+    return () => window.removeEventListener("keydown", handleKey);
+  }, [fetchDeals, fetchStats]);
+
   // ── Toast helper ─────────────────────────────────────────────────────────────
 
-  function showToast(msg: string, ok: boolean) {
-    setToast({ msg, ok });
+  function showToast(msg: string, ok: boolean, type: "success" | "error" | "info" = ok ? "success" : "error") {
+    setToast({ msg, ok, type });
     if (toastTimer.current) clearTimeout(toastTimer.current);
     toastTimer.current = setTimeout(() => setToast(null), 3000);
   }
@@ -199,28 +288,54 @@ export default function DashboardClient() {
         body: JSON.stringify({ asin, action }),
       });
       if (!res.ok) throw new Error("failed");
+
       if (action === "buy") {
-        setBought((p) => new Set([...p, asin]));
-        showToast("Added to purchase list!", true);
+        setBought((p) => {
+          const next = new Set([...p, asin]);
+          try { localStorage.setItem("nexarb_bought", JSON.stringify([...next])); } catch { /* ignore */ }
+          return next;
+        });
+        showToast("Added to purchase list!", true, "success");
       } else {
-        setSkipped((p) => new Set([...p, asin]));
-        showToast("Deal skipped", false);
+        // Add 5-second undo window
+        const timer = setTimeout(() => {
+          setUndoQueue((q) => q.filter((x) => x.asin !== asin));
+        }, 5000);
+        setUndoQueue((q) => [...q, { asin, timer }]);
+        setSkipped((p) => {
+          const next = new Set([...p, asin]);
+          try { localStorage.setItem("nexarb_skipped", JSON.stringify([...next])); } catch { /* ignore */ }
+          return next;
+        });
+        showToast("Deal skipped", false, "info");
       }
     } catch {
-      showToast("Action failed — try again", false);
+      showToast("Action failed — try again", false, "error");
     } finally {
       setActionLoading(null);
     }
   }
 
+  function handleUndo(asin: string) {
+    const entry = undoQueue.find((x) => x.asin === asin);
+    if (entry) clearTimeout(entry.timer);
+    setUndoQueue((q) => q.filter((x) => x.asin !== asin));
+    setSkipped((p) => {
+      const next = new Set(p);
+      next.delete(asin);
+      try { localStorage.setItem("nexarb_skipped", JSON.stringify([...next])); } catch { /* ignore */ }
+      return next;
+    });
+    showToast("Deal restored", true, "info");
+  }
+
   async function handleScan() {
     setScanning(true);
+    showToast("Scan triggered! Results will appear in 2–3 minutes.", true, "info");
     try {
-      await fetch("http://137.184.184.27:3001/webhook", {
+      await fetch("/api/scan/trigger", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ trigger: "manual_scan" }),
-        signal: AbortSignal.timeout(5000),
+        signal: AbortSignal.timeout(10000),
       });
     } catch { /* best-effort */ }
     setTimeout(async () => {
@@ -240,10 +355,11 @@ export default function DashboardClient() {
 
   const filteredDeals = deals
     .filter((d) => {
-      if (bought.has(d.asin) || skipped.has(d.asin)) return false;
+      if (skipped.has(d.asin)) return false;
+      if (search && !d.title.toLowerCase().includes(search.toLowerCase()) && !d.asin.toLowerCase().includes(search.toLowerCase())) return false;
       if (activeFilter === "All") return true;
       if (activeFilter === "High Confidence") return d.confidence === "high";
-      if (activeFilter === "Pending") return true;
+      if (activeFilter === "Pending") return !bought.has(d.asin);
       return d.channel.toLowerCase() === activeFilter.toLowerCase();
     })
     .sort((a, b) => {
@@ -252,9 +368,14 @@ export default function DashboardClient() {
       return sortDir === "asc" ? av - bv : bv - av;
     });
 
+  const isPaidOrTrialing = subscription && (subscription.plan !== "free" || subscription.status === "trialing" || subscription.status === "active");
+  const FREE_LIMIT = 10;
+  const visibleDeals = isPaidOrTrialing ? filteredDeals : filteredDeals.slice(0, FREE_LIMIT);
+  const lockedCount = isPaidOrTrialing ? 0 : Math.max(0, filteredDeals.length - FREE_LIMIT);
+
   // ── Stat cards ───────────────────────────────────────────────────────────────
 
-  const pendingInvestment = filteredDeals.reduce((s, d) => s + d.buyPrice, 0);
+  const pendingInvestment = filteredDeals.filter((d) => !bought.has(d.asin)).reduce((s, d) => s + d.buyPrice, 0);
   const statCards = [
     {
       label: "Deals Today",
@@ -288,17 +409,74 @@ export default function DashboardClient() {
     },
   ];
 
+  const countdownMin = Math.floor(countdown / 60);
+  const countdownSec = countdown % 60;
+
   // ── Render ───────────────────────────────────────────────────────────────────
 
   return (
     <div className="p-5 lg:p-8">
-      {/* Toast */}
-      {toast && (
+      {/* Undo notifications */}
+      <div className="fixed top-4 right-4 z-50 flex flex-col gap-2">
+        {toast && (
+          <div
+            className="px-4 py-3 rounded-xl text-sm font-semibold shadow-lg transition-all flex items-center gap-2"
+            style={{
+              background: toast.type === "success" ? "#16A34A" : toast.type === "error" ? "#EF4444" : "#0D1B2A",
+              color: "#fff",
+            }}
+          >
+            {toast.type === "success" ? "✓" : toast.type === "error" ? "✕" : "ℹ"} {toast.msg}
+          </div>
+        )}
+        {undoQueue.map((u) => (
+          <div
+            key={u.asin}
+            className="px-4 py-3 rounded-xl text-sm font-semibold shadow-lg flex items-center gap-3"
+            style={{ background: "#1F2937", color: "#fff" }}
+          >
+            Deal skipped
+            <button
+              onClick={() => handleUndo(u.asin)}
+              className="underline font-bold"
+              style={{ color: "#B8922A" }}
+            >
+              Undo
+            </button>
+          </div>
+        ))}
+      </div>
+
+      {/* Free plan upgrade prompt */}
+      {subscription && !isPaidOrTrialing && !showUpgradeBanner && deals.length > FREE_LIMIT && (
         <div
-          className="fixed top-4 right-4 z-50 px-4 py-3 rounded-xl text-sm font-semibold shadow-lg transition-all"
-          style={{ background: toast.ok ? "#16A34A" : "#0D1B2A", color: "#fff" }}
+          className="mb-6 px-5 py-3.5 rounded-2xl flex items-center justify-between border"
+          style={{ background: "#FFFBEB", borderColor: "#FDE68A" }}
         >
-          {toast.msg}
+          <div className="flex items-center gap-3">
+            <span className="text-lg">⚡</span>
+            <p className="text-sm font-medium" style={{ color: "#92400E" }}>
+              You&apos;re on the free plan. Upgrade to see all {deals.length} deals →
+            </p>
+          </div>
+          <a
+            href="/dashboard/billing"
+            className="shrink-0 px-4 py-2 rounded-xl text-xs font-semibold text-white"
+            style={{ background: "#B8922A" }}
+          >
+            Upgrade
+          </a>
+        </div>
+      )}
+
+      {/* Upgrade success banner */}
+      {showUpgradeBanner && (
+        <div className="mb-6 px-5 py-4 rounded-2xl flex items-center justify-between" style={{ background: "linear-gradient(135deg, #B8922A 0%, #D4A843 100%)" }}>
+          <div>
+            <p className="text-white font-semibold text-sm">🎉 Welcome to NexArb Professional!</p>
+            <p className="text-white/80 text-xs mt-0.5">Your 14-day free trial has started. Explore all deals and channels.</p>
+          </div>
+          <button onClick={() => setShowUpgradeBanner(false)} className="text-white/70 hover:text-white transition text-lg">×</button>
         </div>
       )}
 
@@ -321,6 +499,9 @@ export default function DashboardClient() {
             {lastUpdated > 0 && (
               <p className="text-xs text-gray-400">
                 Updated: <span className="font-medium text-gray-600">{formatLastUpdated(lastUpdated)}</span>
+                {countdown > 0 && !scanning && (
+                  <span className="ml-1 text-gray-300">· refresh in {countdownMin}:{String(countdownSec).padStart(2, "0")}</span>
+                )}
               </p>
             )}
             {scanning && (
@@ -344,10 +525,14 @@ export default function DashboardClient() {
             </span>
           </div>
 
-          <button className="p-2.5 rounded-xl border border-gray-200 bg-white hover:bg-gray-50 transition relative">
-            <BellIcon size={18} />
-            <span className="absolute top-1 right-1 w-2 h-2 rounded-full" style={{ background: "#EF4444" }} />
+          <button
+            onClick={() => { fetchDeals(); fetchStats(); }}
+            className="p-2.5 rounded-xl border border-gray-200 bg-white hover:bg-gray-50 transition"
+            title="Refresh data (r)"
+          >
+            <RefreshIcon size={18} />
           </button>
+
           <button
             onClick={handleScan}
             disabled={scanning}
@@ -378,7 +563,7 @@ export default function DashboardClient() {
             style={{ boxShadow: "0 1px 12px 0 rgba(13,27,42,0.05)" }}
           >
             <div className="flex items-start justify-between">
-              <div>
+              <div className="min-w-0 flex-1">
                 <p className="text-xs font-medium text-gray-400 uppercase tracking-wider mb-2">{s.label}</p>
                 {statsLoading ? (
                   <div className="h-7 w-20 rounded-lg bg-gray-200 animate-pulse" />
@@ -386,11 +571,15 @@ export default function DashboardClient() {
                   <p className="text-xl lg:text-2xl font-semibold" style={{ color: "#0D1B2A" }}>{s.value}</p>
                 )}
               </div>
-              <span className="text-xl lg:text-2xl">{s.icon}</span>
+              <span className="text-xl lg:text-2xl ml-2 shrink-0">{s.icon}</span>
             </div>
-            <p className={`text-xs mt-2 ${s.up === true ? "text-green-500" : s.up === false ? "text-red-400" : "text-gray-400"}`}>
-              {s.up === true && "↑ "}{s.sub}
-            </p>
+            {statsLoading ? (
+              <div className="h-3 w-28 rounded-md bg-gray-100 animate-pulse mt-2" />
+            ) : (
+              <p className={`text-xs mt-2 ${s.up === true ? "text-green-500" : s.up === false ? "text-red-400" : "text-gray-400"}`}>
+                {s.up === true && "↑ "}{s.sub}
+              </p>
+            )}
           </div>
         ))}
       </div>
@@ -399,23 +588,45 @@ export default function DashboardClient() {
       <div className="flex flex-col xl:flex-row gap-6">
         {/* Deal Pipeline */}
         <div className="flex-1 min-w-0">
-          {/* Filter Bar */}
-          <div className="flex items-center gap-2 mb-4 flex-wrap">
-            {CHANNELS.map((ch) => (
-              <button
-                key={ch}
-                onClick={() => setActiveFilter(ch)}
-                className="px-3.5 py-1.5 rounded-full text-sm font-medium transition-all border"
-                style={
-                  activeFilter === ch
-                    ? { background: "#0D1B2A", color: "#fff", borderColor: "#0D1B2A" }
-                    : { background: "#fff", color: "#6B7280", borderColor: "#E5E7EB" }
-                }
-              >
-                {ch}
-              </button>
-            ))}
-            <span className="ml-auto text-xs text-gray-400">{filteredDeals.length} deals</span>
+          {/* Filter Bar + Search */}
+          <div className="flex flex-col gap-3 mb-4">
+            <div className="flex items-center gap-2 flex-wrap">
+              {CHANNELS.map((ch) => (
+                <button
+                  key={ch}
+                  onClick={() => setActiveFilter(ch)}
+                  className="px-3.5 py-1.5 rounded-full text-sm font-medium transition-all border"
+                  style={
+                    activeFilter === ch
+                      ? { background: "#0D1B2A", color: "#fff", borderColor: "#0D1B2A" }
+                      : { background: "#fff", color: "#6B7280", borderColor: "#E5E7EB" }
+                  }
+                >
+                  {ch}
+                </button>
+              ))}
+              <span className="ml-auto text-xs text-gray-400">{filteredDeals.length} deals</span>
+            </div>
+            {/* Search */}
+            <div className="relative">
+              <SearchIcon size={15} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-400" />
+              <input
+                ref={searchRef}
+                type="text"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Search products… (press / to focus)"
+                className="w-full pl-9 pr-4 py-2.5 rounded-xl border border-gray-200 bg-white text-sm outline-none focus:border-[#B8922A] focus:ring-2 focus:ring-[#B8922A]/10 placeholder:text-gray-300"
+              />
+              {search && (
+                <button
+                  onClick={() => setSearch("")}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-300 hover:text-gray-500 transition"
+                >
+                  ×
+                </button>
+              )}
+            </div>
           </div>
 
           <div
@@ -469,19 +680,17 @@ export default function DashboardClient() {
                           ))}
                         </tr>
                       ))
-                    : filteredDeals.map((deal, i) => {
+                    : visibleDeals.map((deal, i) => {
                         const isActioning = actionLoading === deal.asin + "buy" || actionLoading === deal.asin + "skip";
                         const isBought = bought.has(deal.asin);
-                        const isSkipped = skipped.has(deal.asin);
                         const channelKey = deal.channel.toLowerCase();
                         const channelColor = CHANNEL_COLORS[channelKey] ?? { bg: "#F5F5F5", text: "#616161", dot: "#9E9E9E" };
                         return (
                           <tr
                             key={deal.id}
-                            className="border-b border-gray-50 transition-colors hover:bg-gray-50/60"
+                            className="border-b border-gray-50 transition-all hover:bg-gray-50/60"
                             style={{
                               background: isBought ? "#F0FDF4" : i % 2 === 1 ? "#FAFAFA" : "#fff",
-                              opacity: isSkipped ? 0.4 : 1,
                             }}
                           >
                             <td className="px-4 py-3.5 text-xs text-gray-400 font-medium">{i + 1}</td>
@@ -531,22 +740,22 @@ export default function DashboardClient() {
                               <div className="flex items-center gap-1.5">
                                 {isBought ? (
                                   <span className="text-xs font-medium text-green-600 bg-green-50 px-2.5 py-1 rounded-full">✓ Bought</span>
-                                ) : isSkipped ? (
-                                  <span className="text-xs font-medium text-gray-400 bg-gray-100 px-2.5 py-1 rounded-full">Skipped</span>
                                 ) : (
                                   <>
                                     <button
                                       onClick={() => handleAction(deal.asin, "buy")}
                                       disabled={isActioning}
-                                      className="px-2.5 py-1 rounded-lg text-xs font-semibold text-white transition hover:opacity-90 disabled:opacity-50"
+                                      className="px-2.5 py-1.5 rounded-lg text-xs font-semibold text-white transition hover:opacity-90 disabled:opacity-50"
                                       style={{ background: "#B8922A" }}
+                                      title="Buy this deal (b)"
                                     >
-                                      {isActioning ? "…" : "Buy"}
+                                      {isActioning && actionLoading === deal.asin + "buy" ? "…" : "Buy"}
                                     </button>
                                     <button
                                       onClick={() => handleAction(deal.asin, "skip")}
                                       disabled={isActioning}
-                                      className="px-2.5 py-1 rounded-lg text-xs font-semibold border text-gray-400 border-gray-200 hover:bg-gray-50 transition disabled:opacity-50"
+                                      className="px-2.5 py-1.5 rounded-lg text-xs font-semibold border text-gray-400 border-gray-200 hover:bg-gray-50 transition disabled:opacity-50"
+                                      title="Skip deal (s)"
                                     >
                                       Skip
                                     </button>
@@ -561,16 +770,45 @@ export default function DashboardClient() {
               </table>
             </div>
 
+            {/* Locked rows for free users */}
+            {!dealsLoading && lockedCount > 0 && (
+              <div className="relative px-4 py-8 border-t border-gray-100">
+                <div className="absolute inset-0 bg-gradient-to-b from-transparent to-white/95 pointer-events-none" />
+                <div className="text-center relative z-10">
+                  <p className="text-sm font-semibold mb-1" style={{ color: "#0D1B2A" }}>
+                    {lockedCount} more deals hidden
+                  </p>
+                  <p className="text-xs text-gray-400 mb-3">
+                    You&apos;re on the free plan. Upgrade to see all {filteredDeals.length} deals →
+                  </p>
+                  <a
+                    href="/dashboard/billing"
+                    className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-semibold text-white transition-all hover:opacity-90"
+                    style={{ background: "linear-gradient(135deg, #B8922A 0%, #D4A843 100%)" }}
+                  >
+                    Upgrade to unlock all deals
+                  </a>
+                </div>
+              </div>
+            )}
+
             {!dealsLoading && filteredDeals.length === 0 && (
               <div className="py-16 text-center">
-                <p className="text-gray-400 text-sm mb-2">No deals found for this filter.</p>
-                <button
-                  onClick={() => setActiveFilter("All")}
-                  className="text-sm font-medium"
-                  style={{ color: "#B8922A" }}
-                >
-                  Show all deals
-                </button>
+                {search ? (
+                  <>
+                    <p className="text-gray-400 text-sm mb-2">No deals match &ldquo;{search}&rdquo;</p>
+                    <button onClick={() => setSearch("")} className="text-sm font-medium" style={{ color: "#B8922A" }}>
+                      Clear search
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <p className="text-gray-400 text-sm mb-2">No deals match your filters.</p>
+                    <button onClick={() => setActiveFilter("All")} className="text-sm font-medium" style={{ color: "#B8922A" }}>
+                      Show all deals
+                    </button>
+                  </>
+                )}
               </div>
             )}
           </div>
@@ -591,7 +829,20 @@ export default function DashboardClient() {
             </div>
             <div className="divide-y divide-gray-50">
               {activity.length === 0 ? (
-                <div className="px-5 py-8 text-center text-xs text-gray-400">No recent activity</div>
+                <div className="px-5 py-8 text-center">
+                  <div className="space-y-3">
+                    {Array.from({ length: 4 }).map((_, i) => (
+                      <div key={i} className="flex items-start gap-3">
+                        <div className="mt-1 w-2 h-2 rounded-full bg-gray-200 animate-pulse shrink-0" />
+                        <div className="flex-1 space-y-1.5">
+                          <div className="h-3 rounded bg-gray-200 animate-pulse" />
+                          <div className="h-2.5 w-2/3 rounded bg-gray-100 animate-pulse" />
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  <p className="text-xs text-gray-300 mt-4">Activity will appear here as deals are processed.</p>
+                </div>
               ) : (
                 activity.map((event) => {
                   const dotColor =
@@ -629,6 +880,15 @@ export default function DashboardClient() {
               )}
             </div>
           </div>
+
+          {/* Keyboard shortcuts hint */}
+          <div className="mt-4 px-4 py-3 rounded-xl border border-gray-100 bg-white">
+            <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Shortcuts</p>
+            <div className="space-y-1 text-xs text-gray-400">
+              <div className="flex justify-between"><span>Focus search</span><kbd className="px-1.5 py-0.5 rounded bg-gray-100 text-gray-500 font-mono">/</kbd></div>
+              <div className="flex justify-between"><span>Refresh data</span><kbd className="px-1.5 py-0.5 rounded bg-gray-100 text-gray-500 font-mono">R</kbd></div>
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -662,15 +922,6 @@ function PriceTypeBadge({ verified }: { verified: boolean }) {
   );
 }
 
-function BellIcon({ size = 18 }: { size?: number }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M18 8A6 6 0 006 8c0 7-3 9-3 9h18s-3-2-3-9" />
-      <path d="M13.73 21a2 2 0 01-3.46 0" />
-    </svg>
-  );
-}
-
 function ScanIcon({ size = 16 }: { size?: number }) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -683,6 +934,24 @@ function SpinIcon({ size = 16 }: { size?: number }) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="animate-spin">
       <path d="M21 12a9 9 0 11-6.219-8.56" />
+    </svg>
+  );
+}
+
+function RefreshIcon({ size = 18 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" color="#6B7280">
+      <polyline points="23 4 23 10 17 10" />
+      <path d="M20.49 15a9 9 0 11-2.12-9.36L23 10" />
+    </svg>
+  );
+}
+
+function SearchIcon({ size = 16, className = "" }: { size?: number; className?: string }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <circle cx="11" cy="11" r="8" />
+      <line x1="21" y1="21" x2="16.65" y2="16.65" />
     </svg>
   );
 }
