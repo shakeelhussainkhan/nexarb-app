@@ -2,10 +2,12 @@ import crypto from "crypto";
 
 // AES-256-CBC encryption for stored marketplace secrets (Amazon MWS token,
 // Walmart secret). Fails closed: encryptSecret throws when ENCRYPTION_KEY is
-// missing or malformed rather than ever returning plaintext.
+// missing rather than ever returning plaintext.
 //
-// ENCRYPTION_KEY format: 32 bytes encoded as 64-character hex, or base64
-// that decodes to exactly 32 bytes.
+// ENCRYPTION_KEY format: preferably 32 bytes encoded as 64-character hex,
+// or base64 that decodes to exactly 32 bytes. Any other non-empty value is
+// accepted via SHA-256 derivation (legacy compatibility); only a missing
+// key fails.
 
 function getKey(): Buffer {
   const raw = process.env.ENCRYPTION_KEY;
@@ -19,7 +21,11 @@ function getKey(): Buffer {
   if (decoded.length === 32) {
     return decoded;
   }
-  throw new Error("ENCRYPTION_KEY must be 32 bytes (64-char hex or base64)");
+  // Legacy passphrase-style keys: derive a deterministic 32-byte key so an
+  // existing non-hex env value keeps working instead of failing saves.
+  // (Values encrypted under the old zero-padding scheme are not readable by
+  // this helper; re-entering the marketplace credentials re-encrypts them.)
+  return crypto.createHash("sha256").update(raw).digest();
 }
 
 export function encryptSecret(text: string): string {
