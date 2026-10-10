@@ -47,7 +47,7 @@ export default function SettingsPage() {
   // Pre-fill from Clerk
   useEffect(() => {
     if (isLoaded && user) {
-      setName(user.fullName ?? user.firstName ?? "");
+      setName((prev) => prev || (user.fullName ?? user.firstName ?? ""));
       setEmail(user.emailAddresses?.[0]?.emailAddress ?? "");
     }
   }, [isLoaded, user]);
@@ -58,6 +58,7 @@ export default function SettingsPage() {
       .then((r) => r.json())
       .then(({ settings }) => {
         if (!settings) return;
+        if (settings.display_name) setName(settings.display_name);
         if (settings.amz_seller_id) setAmzSellerId(settings.amz_seller_id);
         if (settings.walmart_client_id) setWalmartClientId(settings.walmart_client_id);
         if (settings.telegram_chat_id) {
