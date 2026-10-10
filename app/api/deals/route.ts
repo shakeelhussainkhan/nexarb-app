@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { evaluateDeal, type DealVerdict } from "@/lib/engine/verdict";
 
 const BACKEND_URL = "http://137.184.184.27:3001";
 
@@ -18,6 +19,10 @@ export interface Deal {
   timestamp: string;
 }
 
+export interface EnrichedDeal extends Deal {
+  engine: DealVerdict;
+}
+
 export async function GET(): Promise<NextResponse> {
   try {
     const res = await fetch(`${BACKEND_URL}/deals`, {
@@ -26,7 +31,16 @@ export async function GET(): Promise<NextResponse> {
     });
     if (!res.ok) throw new Error(`Backend returned ${res.status}`);
     const data: Deal[] = await res.json();
-    return NextResponse.json(data);
+    const enriched: EnrichedDeal[] = data.map((d) => ({
+      ...d,
+      engine: evaluateDeal({
+        buyPrice: d.buyPrice,
+        sellPrice: d.sellPrice,
+        bsr: d.bsr,
+        category: d.category,
+      }),
+    }));
+    return NextResponse.json(enriched);
   } catch {
     return NextResponse.json([], { status: 200 });
   }
