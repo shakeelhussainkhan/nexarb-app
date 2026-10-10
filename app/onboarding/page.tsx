@@ -148,14 +148,15 @@ function StepOne({
           🟠
         </div>
         <div>
-          <h2 className="font-semibold" style={{ color: "#0D1B2A" }}>Connect Amazon SP-API</h2>
-          <p className="text-sm text-gray-400">We&apos;ll use this to fetch your seller data</p>
+          <h2 className="font-semibold" style={{ color: "#0D1B2A" }}>Connect Amazon</h2>
+          <p className="text-sm text-gray-400">Your Seller ID links your account. SP-API authorization is a separate step — we never ask for your Amazon password.</p>
         </div>
       </div>
 
       <div className="space-y-4">
         <Field label="Seller ID" value={sellerId} onChange={setSellerId} placeholder="A2JJKB8..." />
-        <Field label="MWS Auth Token" value={mwsToken} onChange={setMwsToken} placeholder="amzn.mws.xxxxxxxx" type="password" />
+        <Field label="MWS Auth Token (legacy, optional)" value={mwsToken} onChange={setMwsToken} placeholder="amzn.mws.xxxxxxxx" type="password" />
+        <p className="text-xs text-gray-400 -mt-2">MWS is Amazon&apos;s retired API. Leave blank if you don&apos;t have one — eligibility and inventory checks run on SP-API.</p>
         <div>
           <label className="block text-xs font-medium text-gray-500 mb-1.5 uppercase tracking-wider">Marketplace</label>
           <select
