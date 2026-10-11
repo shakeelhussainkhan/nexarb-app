@@ -1,5 +1,6 @@
 import { SignUp } from "@clerk/nextjs";
 import type { Metadata } from "next";
+import AuthSplit from "@/components/AuthSplit";
 
 export const metadata: Metadata = {
   title: "Create account — NexArb",
@@ -8,20 +9,11 @@ export const metadata: Metadata = {
 
 export default function SignUpPage() {
   return (
-    <div
-      style={{
-        minHeight: "100vh",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        background: "#ffffff",
-      }}
+    <AuthSplit
+      title="Start finding margin in minutes."
+      subtitle="14-day free trial. No credit card. Verify your first deal live against Amazon before you spend a dollar."
     >
-      <SignUp
-        routing="hash"
-        forceRedirectUrl="/onboarding"
-        signInUrl="/login"
-      />
-    </div>
+      <SignUp routing="hash" forceRedirectUrl="/onboarding" signInUrl="/login" />
+    </AuthSplit>
   );
 }
