@@ -26,19 +26,18 @@ export async function GET() {
     // "free". Provision an unlimited, non-expiring agency subscription.
     // TODO: replace with 14-day trial provisioning before onboarding paying
     // customers — this must not grant agency to the public.
+    // Plain INSERT: we already verified no row exists for this user_id, and
+    // the live table lacks a unique constraint for ON CONFLICT to target.
     const { data: created, error } = await admin
       .from("nexarb_subscriptions")
-      .upsert(
-        {
-          user_id: userId,
-          email: "",
-          plan: "agency",
-          status: "active",
-          trial_ends_at: null,
-          current_period_end: null,
-        },
-        { onConflict: "user_id" }
-      )
+      .insert({
+        user_id: userId,
+        email: "",
+        plan: "agency",
+        status: "active",
+        trial_ends_at: null,
+        current_period_end: null,
+      })
       .select()
       .maybeSingle();
 
