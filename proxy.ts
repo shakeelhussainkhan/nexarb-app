@@ -11,6 +11,7 @@ const isPublicRoute = createRouteMatcher([
   '/api/user-chat-ids(.*)',
   '/api/stripe/webhook(.*)',
   '/api/clerk(.*)',
+  '/api/spapi/callback(.*)', // one-time founder SP-API OAuth (logged-out Amazon redirect)
 ])
 
 export default clerkMiddleware(async (auth, request) => {
