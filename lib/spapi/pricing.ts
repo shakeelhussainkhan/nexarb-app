@@ -67,8 +67,8 @@ export async function getLiveSellPrice(
     const endpoint = cfg.endpoint ?? "https://sellingpartnerapi-na.amazon.com";
     const url =
       `${endpoint}/products/pricing/v0/competitivePrice` +
-      `?marketplaceId=${encodeURIComponent(cfg.marketplaceId)}` +
-      `&asin=${encodeURIComponent(asin)}&itemType=Asin`;
+      `?MarketplaceId=${encodeURIComponent(cfg.marketplaceId)}` +
+      `&asin=${encodeURIComponent(asin)}&ItemType=Asin`;
     const res = await fetchFn(url, {
       headers: {
         "x-amz-access-token": token,
