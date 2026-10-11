@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useMemo, useEffect, useCallback } from "react";
+import PurchaseGuard from "@/components/PurchaseGuard";
 
 type Deal = {
   id: number;
@@ -101,6 +102,13 @@ export default function DealsPage() {
   }
 
   async function actOn(asin: string, action: "buy" | "skip") {
+    // Buy no longer goes through /api/deals/action (it let Buy through on
+    // SKIP/UNKNOWN verdicts). Use createPurchaseIntent / PurchaseGuard instead.
+    if (action === "buy") {
+      const deal = deals.find((d) => d.asin === asin);
+      if (deal) await createPurchaseIntent(deal);
+      return;
+    }
     try {
       const res = await fetch("/api/deals/action", {
         method: "POST",
@@ -112,6 +120,38 @@ export default function DealsPage() {
       setSelected((prev) => { const s = new Set(prev); s.delete(asin); return s; });
     } catch {
       setNotice(`Could not record ${action} for ${asin} — the deal server didn't confirm. Nothing was removed.`);
+    }
+  }
+
+  // Records a PENDING_APPROVAL purchase intent via the guarded endpoint. The
+  // server re-checks verdict + eligibility + spend caps + kill switch and
+  // returns 422 with reasons when any guard blocks; nothing is purchased here.
+  async function createPurchaseIntent(deal: Deal) {
+    try {
+      const res = await fetch("/api/purchases", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          asin: deal.asin,
+          qty: deal.engine.suggestedQty,
+          unitPrice: deal.buyPrice,
+          buyPrice: deal.buyPrice,
+          sellPrice: deal.sellPrice,
+          bsr: deal.bsr,
+          category: deal.category,
+        }),
+      });
+      const data = (await res.json()) as { reasons?: string[]; warning?: string };
+      if (res.status === 422) {
+        setNotice(`Purchase blocked for ${deal.asin}: ${(data.reasons ?? ["guardrail block"]).join(" ")}`);
+        return;
+      }
+      if (!res.ok) throw new Error("failed");
+      setDeals((prev) => prev.filter((d) => d.asin !== deal.asin));
+      setSelected((prev) => { const s = new Set(prev); s.delete(deal.asin); return s; });
+      setNotice(data.warning ?? `Intent recorded for ${deal.asin} — awaiting approval. Nothing purchased yet.`);
+    } catch {
+      setNotice(`Could not record intent for ${deal.asin} — the server didn't confirm. Nothing was purchased.`);
     }
   }
 
@@ -308,7 +348,12 @@ export default function DealsPage() {
                   </td>
                   <td className="px-4 py-3.5 whitespace-nowrap">
                     <div className="flex items-center gap-1.5">
-                      <button onClick={() => actOn(deal.asin, "buy")} className="px-2.5 py-1 rounded-lg text-xs font-semibold text-white" style={{ background: "#B8922A" }}>Buy</button>
+                      <PurchaseGuard
+                        verdict={deal.engine.verdict}
+                        reasons={deal.engine.reasons}
+                        asin={deal.asin}
+                        onConfirm={() => createPurchaseIntent(deal)}
+                      />
                       <button onClick={() => actOn(deal.asin, "skip")} className="px-2.5 py-1 rounded-lg text-xs font-semibold border text-gray-400 border-gray-200 hover:bg-gray-50">Skip</button>
                     </div>
                   </td>
