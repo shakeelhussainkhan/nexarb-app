@@ -15,7 +15,7 @@ export async function GET(): Promise<NextResponse> {
 
   try {
     const admin = getSupabaseAdmin();
-    const [{ data: checks }, { data: intents }] = await Promise.all([
+    const [{ data: checks }, { data: intents }, { data: watched }] = await Promise.all([
       admin
         .from("deal_checks")
         .select("asin, verdict, eligibility, checked_at")
@@ -26,9 +26,17 @@ export async function GET(): Promise<NextResponse> {
         .select("asin, status, created_at, decided_at")
         .order("created_at", { ascending: false })
         .limit(10),
+      admin.from("watchlist").select("asin, title"),
     ]);
+    const titles = new Map(
+      ((watched ?? []) as Array<{ asin: string; title: string }>).map((w) => [w.asin, w.title])
+    );
 
-    const events: Array<{ type: string; asin: string; detail: string; at: string }> = [];
+    const events: Array<{
+      type: string;
+      data: { asin: string; title?: string };
+      timestamp: string;
+    }> = [];
     for (const c of (checks ?? []) as Array<{
       asin: string;
       verdict: string;
@@ -37,9 +45,8 @@ export async function GET(): Promise<NextResponse> {
     }>) {
       events.push({
         type: c.verdict === "BUY" ? "routing_decision" : "product_rejected",
-        asin: c.asin,
-        detail: `Deal check: verdict ${c.verdict}, eligibility ${c.eligibility}`,
-        at: c.checked_at,
+        data: { asin: c.asin, title: titles.get(c.asin) },
+        timestamp: c.checked_at,
       });
     }
     for (const p of (intents ?? []) as Array<{
@@ -50,12 +57,11 @@ export async function GET(): Promise<NextResponse> {
     }>) {
       events.push({
         type: "routing_decision",
-        asin: p.asin,
-        detail: `Purchase intent ${p.status}`,
-        at: p.decided_at ?? p.created_at,
+        data: { asin: p.asin, title: titles.get(p.asin) },
+        timestamp: p.decided_at ?? p.created_at,
       });
     }
-    events.sort((a, b) => (a.at < b.at ? 1 : -1));
+    events.sort((a, b) => (a.timestamp < b.timestamp ? 1 : -1));
     return NextResponse.json(events.slice(0, 20));
   } catch {
     return NextResponse.json([]);

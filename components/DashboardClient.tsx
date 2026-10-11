@@ -709,7 +709,7 @@ export default function DashboardClient() {
                             </td>
                             <td className="px-4 py-3.5 text-gray-600 whitespace-nowrap">${deal.buyPrice.toFixed(2)}</td>
                             <td className="px-4 py-3.5 text-gray-600 whitespace-nowrap">${deal.sellPrice.toFixed(2)}</td>
-                            <td className="px-4 py-3.5 font-semibold text-green-600 whitespace-nowrap">+${deal.profit.toFixed(2)}</td>
+                            <td className={`px-4 py-3.5 font-semibold whitespace-nowrap ${deal.profit >= 0 ? "text-green-600" : "text-red-600"}`}>{deal.profit >= 0 ? `+$${deal.profit.toFixed(2)}` : `-$${Math.abs(deal.profit).toFixed(2)}`}</td>
                             <td className="px-4 py-3.5 whitespace-nowrap">
                               <span
                                 className="font-semibold"
