@@ -1,13 +1,7 @@
 import { NextResponse } from "next/server";
-import { evaluateDeal, type DealVerdict, type DealForVerdict } from "@/lib/engine/verdict";
-import {
-  legacyKeepaSignalsToSnapshots,
-  priceMedians,
-  snapshotsToVelocitySignals,
-} from "@/lib/engine/velocity";
-import type { MarketSnapshot } from "@/lib/data/types";
-
-const BACKEND_URL = "http://137.184.184.27:3001";
+import { auth } from "@clerk/nextjs/server";
+import { getSupabaseAdmin } from "@/lib/supabase";
+import { supabaseIsConfigured } from "@/lib/engine/guards";
 
 export interface Deal {
   id: number;
@@ -25,66 +19,67 @@ export interface Deal {
   timestamp: string;
 }
 
-export interface EnrichedDeal extends Deal {
-  engine: DealVerdict;
-}
-
-// Phase 0: no live snapshot store is wired into this route yet — this returns
-// [] for every ASIN, so legacy relay deals flow through the deprecated
-// Keepa-field adapter below. Once the MarketDataCollector + SnapshotStore are
-// live (SP-API credentials required), return that deal's snapshot series here
-// and the snapshot-aware path takes over automatically.
-async function snapshotsForDeal(asin: string): Promise<MarketSnapshot[]> {
-  void asin;
-  return [];
-}
-
-function buildDealForVerdict(d: Deal, snapshots: MarketSnapshot[]): DealForVerdict {
-  if (snapshots.length > 0) {
-    // Snapshot-aware path (preferred): NexArb price history beats spot.
-    const { buyBoxMedian } = priceMedians(snapshots);
-    return {
-      buyPrice: d.buyPrice,
-      sellPrice: d.sellPrice,
-      realisticPrice: buyBoxMedian ?? d.sellPrice,
-      bsr: d.bsr,
-      category: d.category,
-      velocitySignals: snapshotsToVelocitySignals(snapshots),
-    };
-  }
-  // Legacy relay path: map the relay deal's Keepa-style fields into a
-  // synthetic snapshot series, then derive signals from it. Behavior matches
-  // the old bsr/category evaluation.
-  const legacySnapshots = legacyKeepaSignalsToSnapshots(
-    d.asin,
-    "amazon",
-    { bsr: d.bsr, category: d.category },
-    d.sellPrice
-  );
-  return {
-    buyPrice: d.buyPrice,
-    sellPrice: d.sellPrice,
-    bsr: d.bsr,
-    category: d.category,
-    velocitySignals: snapshotsToVelocitySignals(legacySnapshots),
-  };
-}
-
+// GET /api/deals — first-party deal list.
+// Returns the latest deal_checks row per ASIN (newest first), mapped to the
+// dashboard's Deal shape. No relay involved.
 export async function GET(): Promise<NextResponse> {
-  try {
-    const res = await fetch(`${BACKEND_URL}/deals`, {
-      cache: "no-store",
-      signal: AbortSignal.timeout(8000),
-    });
-    if (!res.ok) throw new Error(`Backend returned ${res.status}`);
-    const data: Deal[] = await res.json();
-    const enriched: EnrichedDeal[] = [];
-    for (const d of data) {
-      const snapshots = await snapshotsForDeal(d.asin);
-      enriched.push({ ...d, engine: evaluateDeal(buildDealForVerdict(d, snapshots)) });
-    }
-    return NextResponse.json(enriched);
-  } catch {
-    return NextResponse.json([], { status: 200 });
+  const { userId } = await auth();
+  if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
+  if (!supabaseIsConfigured(process.env)) {
+    return NextResponse.json({ deals: [], note: "Supabase not configured." });
   }
+
+  const admin = getSupabaseAdmin();
+  const { data, error } = await admin
+    .from("deal_checks")
+    .select(
+      "id, asin, buy_price, buy_source, sell_price, sell_price_source, eligibility, verdict, net_profit, margin_pct, checked_at"
+    )
+    .order("checked_at", { ascending: false })
+    .limit(200);
+
+  if (error) {
+    return NextResponse.json({ deals: [], error: error.message }, { status: 503 });
+  }
+
+  // Latest check per ASIN.
+  const seen = new Set<string>();
+  const deals: Deal[] = [];
+  for (const row of (data ?? []) as Array<{
+    id: number;
+    asin: string;
+    buy_price: number | string;
+    buy_source: string;
+    sell_price: number | string | null;
+    sell_price_source: string;
+    eligibility: string;
+    verdict: string;
+    net_profit: number | string | null;
+    margin_pct: number | string | null;
+    checked_at: string;
+  }>) {
+    if (seen.has(row.asin)) continue;
+    seen.add(row.asin);
+    deals.push({
+      id: row.id,
+      asin: row.asin,
+      title: row.asin,
+      buyPrice: Number(row.buy_price),
+      sellPrice: row.sell_price === null ? 0 : Number(row.sell_price),
+      profit: row.net_profit === null ? 0 : Number(row.net_profit),
+      margin: row.margin_pct === null ? 0 : Number(row.margin_pct),
+      bsr: 0,
+      channel: row.buy_source.includes("walmart") ? "Walmart" : "Manual",
+      confidence:
+        row.sell_price_source === "sp-api-pricing" && row.eligibility !== "UNKNOWN"
+          ? "High"
+          : "Low",
+      verifiedPrice: row.sell_price_source === "sp-api-pricing",
+      category: row.eligibility,
+      timestamp: row.checked_at,
+    });
+  }
+
+  return NextResponse.json({ deals });
 }
