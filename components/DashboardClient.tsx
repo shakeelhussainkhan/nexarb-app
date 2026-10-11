@@ -283,33 +283,53 @@ export default function DashboardClient() {
   async function handleAction(asin: string, action: "buy" | "skip") {
     setActionLoading(asin + action);
     try {
-      const res = await fetch("/api/deals/action", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ asin, action }),
-      });
-      if (!res.ok) throw new Error("failed");
-
       if (action === "buy") {
+        // Guarded purchase intent: server re-checks verdict, eligibility,
+        // spend caps and kill switch. 422 = blocked with reasons.
+        const deal = deals.find((d) => d.asin === asin);
+        if (!deal) throw new Error("deal not found");
+        const res = await fetch("/api/purchases", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            asin: deal.asin,
+            qty: 10,
+            unitPrice: deal.buyPrice,
+            buyPrice: deal.buyPrice,
+            sellPrice: deal.sellPrice,
+            bsr: deal.bsr,
+            category: deal.category,
+          }),
+        });
+        const data = (await res.json()) as { reasons?: string[]; warning?: string };
+        if (res.status === 422) {
+          showToast(
+            `Purchase blocked for ${deal.asin}: ${(data.reasons ?? ["guardrail block"]).join(" ")}`,
+            false,
+            "error"
+          );
+          return;
+        }
+        if (!res.ok) throw new Error("failed");
         setBought((p) => {
           const next = new Set([...p, asin]);
           try { localStorage.setItem("nexarb_bought", JSON.stringify([...next])); } catch { /* ignore */ }
           return next;
         });
-        showToast("Added to purchase list!", true, "success");
-      } else {
-        // Add 5-second undo window
-        const timer = setTimeout(() => {
-          setUndoQueue((q) => q.filter((x) => x.asin !== asin));
-        }, 5000);
-        setUndoQueue((q) => [...q, { asin, timer }]);
-        setSkipped((p) => {
-          const next = new Set([...p, asin]);
-          try { localStorage.setItem("nexarb_skipped", JSON.stringify([...next])); } catch { /* ignore */ }
-          return next;
-        });
-        showToast("Deal skipped", false, "info");
+        showToast(data.warning ?? `Intent recorded for ${asin} — awaiting approval. Nothing purchased yet.`, true, "success");
+        return;
       }
+      // Skip: local hide with 5-second undo (no server call needed).
+      const timer = setTimeout(() => {
+        setUndoQueue((q) => q.filter((x) => x.asin !== asin));
+      }, 5000);
+      setUndoQueue((q) => [...q, { asin, timer }]);
+      setSkipped((p) => {
+        const next = new Set([...p, asin]);
+        try { localStorage.setItem("nexarb_skipped", JSON.stringify([...next])); } catch { /* ignore */ }
+        return next;
+      });
+      showToast("Deal skipped", false, "info");
     } catch {
       showToast("Action failed — try again", false, "error");
     } finally {
