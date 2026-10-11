@@ -81,5 +81,5 @@ export async function GET(): Promise<NextResponse> {
     });
   }
 
-  return NextResponse.json({ deals });
+  return NextResponse.json(deals);
 }
