@@ -12,6 +12,10 @@ export interface DealForVerdict {
   realisticPrice?: number; // e.g. 90-day median Buy Box when history exists
   bsr?: number;
   category?: string;
+  // Snapshot-aware override: when first-party snapshots exist for the ASIN,
+  // derive signals via snapshotsToVelocitySignals() and pass them here. When
+  // absent, evaluateDeal falls back to the legacy bsr/category model path.
+  velocitySignals?: VelocitySignals;
 }
 
 export interface VerdictOptions {
@@ -55,7 +59,7 @@ export function evaluateDeal(deal: DealForVerdict, opts: VerdictOptions = {}): D
   const realistic = deal.realisticPrice ?? deal.sellPrice;
   const outcome = outcomeAtPrice(realistic, costs);
 
-  const signals: VelocitySignals = { bsr: deal.bsr, category: deal.category };
+  const signals: VelocitySignals = deal.velocitySignals ?? { bsr: deal.bsr, category: deal.category };
   const est = estimateVelocity(signals);
   const clear = daysToClear(qty, est, signals);
   const suggested = suggestedQty(est, signals, maxClearDays, cap);
@@ -93,7 +97,7 @@ export function evaluateDeal(deal: DealForVerdict, opts: VerdictOptions = {}): D
       `Clears in ~${Math.round(clear)}d at est. ${est.monthlySales} sales/mo (${est.basis}, ${est.confidence} confidence); net $${outcome.netProfit.toFixed(2)}/unit at realistic price.`
     );
     if (!deal.realisticPrice) reasons.push("Priced on spot sell price — no 90-day history wired yet.");
-    if (est.confidence === "low") reasons.push("Velocity is BSR-model only (±30%) — Keepa data not yet wired.");
+    if (est.confidence === "low") reasons.push("Velocity is BSR-model only (±30%) — NexArb price history not yet wired.");
   }
 
   return {
