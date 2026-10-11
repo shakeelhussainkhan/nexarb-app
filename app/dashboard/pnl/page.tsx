@@ -1,6 +1,10 @@
 import { sellUnits, lotCost, type InventoryLot } from "@/lib/engine/fifo";
 import { getSupabaseAdmin } from "@/lib/supabase";
 
+// Force request-time rendering: this page reads Supabase with server-side
+// secrets that are not available (placeholders) during `next build`.
+export const dynamic = "force-dynamic";
+
 interface SaleRow {
   id: string;
   asin: string;
