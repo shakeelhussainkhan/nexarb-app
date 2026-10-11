@@ -14,5 +14,14 @@ export async function resolve(specifier, context, nextResolve) {
       shortCircuit: true,
     };
   }
+  // Extensionless relative imports (./types) — try .ts before giving up.
+  if (
+    (specifier.startsWith("./") || specifier.startsWith("../")) &&
+    !/\.[a-z0-9]+$/i.test(specifier) &&
+    context.parentURL
+  ) {
+    const candidate = new URL(specifier + ".ts", context.parentURL);
+    return { url: candidate.href, shortCircuit: true };
+  }
   return nextResolve(specifier, context);
 }
