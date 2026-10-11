@@ -1,6 +1,10 @@
 import { revalidatePath } from "next/cache";
 import { getSupabaseAdmin } from "@/lib/supabase";
 
+// Force request-time rendering: this page reads Supabase with server-side
+// secrets that are not available (placeholders) during `next build`.
+export const dynamic = "force-dynamic";
+
 // ---------------------------------------------------------------------------
 // Automated 3PL ops tracker. MANUAL PORTAL WORKFLOW — Automated 3PL has NO API.
 // Every action on this page is an operator recording what they did in the
