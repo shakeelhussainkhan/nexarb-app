@@ -1,0 +1,71 @@
+// Orchestration helpers for the deal-discovery sweeper (POST /api/sourcing/sweep).
+//
+// Flow: sweep Walmart clearance -> extract UPCs -> match each UPC to an Amazon
+// ASIN via SP-API -> insert NEW matches into `watchlist` as candidates for the
+// verification engine.
+//
+// The decision logic here is pure (no network, no secrets) so it can be
+// unit-tested offline. Discovery only writes watchlist candidates — nothing
+// here purchases, creates intents, or spends money.
+
+/** Tag written to watchlist.buy_source for sweeper-discovered candidates. */
+export const SWEEP_BUY_SOURCE = "walmart-clearance";
+
+/** Max NEW watchlist rows a single sweep run may insert. */
+export const MAX_NEW_WATCHLIST_ROWS = 25;
+
+/** A successful UPC -> ASIN match paired with the discovered buy price. */
+export interface UpcMatch {
+  asin: string;
+  title: string;
+  buyPrice: number;
+}
+
+/** Row shape for inserting into the `watchlist` table (migration 006). */
+export interface WatchlistRow {
+  asin: string;
+  title: string;
+  buy_price: number;
+  buy_source: string;
+  category: string | null;
+  active: boolean;
+}
+
+export interface BuildPayloadOptions {
+  maxNew?: number;
+  buySource?: string;
+}
+
+/**
+ * Build the watchlist upsert payload from UPC->ASIN matches.
+ *
+ * - Dedupes by ASIN (first occurrence wins)
+ * - Skips ASINs already present in `existingAsins`
+ * - Skips blank ASINs
+ * - Caps the payload at `maxNew` (default 25) new rows
+ */
+export function buildWatchlistPayload(
+  matches: UpcMatch[],
+  existingAsins: Iterable<string>,
+  opts?: BuildPayloadOptions
+): WatchlistRow[] {
+  const maxNew = opts?.maxNew ?? MAX_NEW_WATCHLIST_ROWS;
+  const buySource = opts?.buySource ?? SWEEP_BUY_SOURCE;
+  const seen = new Set<string>(existingAsins);
+  const rows: WatchlistRow[] = [];
+  for (const m of matches) {
+    if (rows.length >= maxNew) break;
+    const asin = m.asin?.trim();
+    if (!asin || seen.has(asin)) continue;
+    seen.add(asin);
+    rows.push({
+      asin,
+      title: m.title,
+      buy_price: m.buyPrice,
+      buy_source: buySource,
+      category: null,
+      active: true,
+    });
+  }
+  return rows;
+}

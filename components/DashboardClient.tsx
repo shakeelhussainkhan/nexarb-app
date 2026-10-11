@@ -117,6 +117,7 @@ export default function DashboardClient() {
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [toast, setToast] = useState<{ msg: string; ok: boolean; type?: "success" | "error" | "info" } | null>(null);
   const [scanning, setScanning] = useState(false);
+  const [discovering, setDiscovering] = useState(false);
   const [lastScan, setLastScan] = useState("—");
   const [sortBy, setSortBy] = useState<"profit" | "margin" | "bsr">("profit");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
@@ -346,6 +347,42 @@ export default function DashboardClient() {
     }, 3000);
   }
 
+  async function handleDiscover() {
+    if (discovering || scanning) return;
+    setDiscovering(true);
+    try {
+      const res = await fetch("/api/sourcing/sweep", {
+        method: "POST",
+        signal: AbortSignal.timeout(10000),
+      });
+      const data = (await res.json().catch(() => null)) as {
+        success?: boolean; swept?: number; matched?: number; added?: number; error?: string;
+      } | null;
+      if (res.ok && data?.success) {
+        showToast(
+          `Discovery: ${data.swept ?? 0} swept, ${data.matched ?? 0} matched, ${data.added ?? 0} added to watchlist.`,
+          true,
+          "success"
+        );
+        setLastScan("just now");
+      } else {
+        showToast(data?.error || "Discovery failed — try again", false, "error");
+      }
+    } catch (e) {
+      const timedOut = e instanceof DOMException && e.name === "AbortError";
+      showToast(
+        timedOut
+          ? "Discovery is still running in the background — refresh in a minute to see results."
+          : "Discovery request failed — try again",
+        false,
+        timedOut ? "info" : "error"
+      );
+    } finally {
+      await fetchDeals();
+      setDiscovering(false);
+    }
+  }
+
   function toggleSort(col: "profit" | "margin" | "bsr") {
     if (sortBy === col) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
     else { setSortBy(col); setSortDir("desc"); }
@@ -512,6 +549,14 @@ export default function DashboardClient() {
                 Scanning…
               </span>
             )}
+            {discovering && (
+              <span
+                className="text-xs px-2.5 py-1 rounded-full font-medium animate-pulse"
+                style={{ background: "#FFF8E1", color: "#B8922A" }}
+              >
+                Discovering…
+              </span>
+            )}
           </div>
         </div>
         <div className="flex items-center gap-3">
@@ -531,6 +576,16 @@ export default function DashboardClient() {
             title="Refresh data (r)"
           >
             <RefreshIcon size={18} />
+          </button>
+
+          <button
+            onClick={handleDiscover}
+            disabled={discovering || scanning}
+            className="flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-semibold transition-all border hover:bg-amber-50 disabled:opacity-60"
+            style={{ background: "#fff", borderColor: "#B8922A", color: "#B8922A" }}
+            title="Sweep Walmart clearance for new deal candidates"
+          >
+            {discovering ? <><SpinIcon size={16} /> Discovering…</> : <><SparkleIcon size={16} /> Discover deals</>}
           </button>
 
           <button
@@ -926,6 +981,15 @@ function ScanIcon({ size = 16 }: { size?: number }) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <polyline points="22 12 18 12 15 21 9 3 6 12 2 12" />
+    </svg>
+  );
+}
+
+function SparkleIcon({ size = 16 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 3l1.9 5.7 5.6 1.8-5.6 1.9L12 18l-1.9-5.6L4.5 10.5l5.6-1.8L12 3z" />
+      <path d="M19 3l.8 2.2L22 6l-2.2.8L19 9l-.8-2.2L16 6l2.2-.8L19 3z" />
     </svg>
   );
 }
