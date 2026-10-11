@@ -77,8 +77,9 @@ export async function getLiveSellPrice(
       signal: AbortSignal.timeout(10000),
     });
     if (!res.ok) {
+      const body = await res.text().catch(() => "");
       return fail(
-        `SP-API pricing returned ${res.status} — live sell price unknown, not treated as zero.`
+        `SP-API pricing returned ${res.status}${body ? ` — ${body.slice(0, 300)}` : ""} — live sell price unknown, not treated as zero.`
       );
     }
     const data = (await res.json()) as {
