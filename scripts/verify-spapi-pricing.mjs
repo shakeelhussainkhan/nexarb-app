@@ -46,8 +46,8 @@ const captureFetch = async (url, init) => {
 };
 await getLiveSellPrice(cfg, "B004IR3044", captureFetch);
 check(
-  "uses lowercase asin/marketplaceId/itemType params",
-  /[?&]asin=B004IR3044/.test(capturedUrl) && /[?&]marketplaceId=/.test(capturedUrl) && /[?&]itemType=Asin/.test(capturedUrl),
+  "uses asin + MarketplaceId + ItemType params",
+  /[?&]asin=B004IR3044/.test(capturedUrl) && /[?&]MarketplaceId=/.test(capturedUrl) && /[?&]ItemType=Asin/.test(capturedUrl),
   capturedUrl
 );
 
