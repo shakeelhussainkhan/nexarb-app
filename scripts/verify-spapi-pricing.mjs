@@ -39,6 +39,18 @@ const okFetch = async (url, init) => {
 const r = await getLiveSellPrice(cfg, "B004IR3044", okFetch);
 check("live price parsed", r.price === 12.34 && r.source === "sp-api-pricing", JSON.stringify(r));
 
+let capturedUrl = "";
+const captureFetch = async (url, init) => {
+  capturedUrl = String(url);
+  return okFetch(url, init);
+};
+await getLiveSellPrice(cfg, "B004IR3044", captureFetch);
+check(
+  "uses lowercase asin/marketplaceId/itemType params",
+  /[?&]asin=B004IR3044/.test(capturedUrl) && /[?&]marketplaceId=/.test(capturedUrl) && /[?&]itemType=Asin/.test(capturedUrl),
+  capturedUrl
+);
+
 const emptyFetch = async (url, init) => {
   const u = String(url);
   if (u.includes("api.amazon.com")) return { ok: true, json: async () => ({ access_token: "tok" }) };
