@@ -83,3 +83,150 @@ export function decideRepricing(input: RepricingInput): RepricingDecision {
 
   return { action: "hold", newPrice: currentPrice, reason: "Price inside floor/ceiling corridor with balanced supply — no move." };
 }
+
+// ── WS4: Buy Box list-price suggestion, price-monitor logging, auto-reprice stub ──
+// Execution of any live price change is intentionally NOT implemented here.
+// See maybeAutoreprice for the founder-approval gate.
+
+// Structural interface for the sibling worker's ChannelEvaluation (being added
+// to verdict.ts). Import nothing from verdict.ts — match this shape locally.
+export interface ChannelEvaluationLike {
+  sellPrice: number; // current observed sell/buy-box price for the channel
+  floorPrice: number; // fee-stack break-even floor for the channel
+  netProfit: number; // per-unit net profit at sellPrice
+}
+
+export interface ListPriceInput {
+  buyBoxPrice: number | null; // current Buy Box price; null when unknown
+  floorPrice: number; // fee-stack break-even floor (pricing.ts)
+  channel: string; // e.g. "amazon" — carried for context, not math
+}
+
+export interface ListPriceSuggestion {
+  suggested: number | null; // penny under the Buy Box, clamped to [floor, ceiling]
+  floor: number;
+  ceiling: number; // buyBox * 1.5 — documented, deliberately generous
+  reasoning: string;
+}
+
+// Suggest a list price: penny under the current Buy Box, clamped to the
+// [floor, ceiling] corridor. Never suggests below break-even.
+export function suggestListPrice(input: ListPriceInput): ListPriceSuggestion {
+  const floor = round2(input.floorPrice);
+  const buyBox = input.buyBoxPrice;
+  if (buyBox === null || buyBox === undefined || !(buyBox > 0)) {
+    return {
+      suggested: null,
+      floor,
+      ceiling: 0,
+      reasoning: "no buy box data — cannot suggest a list price.",
+    };
+  }
+  const ceiling = round2(buyBox * 1.5);
+  if (buyBox < floor) {
+    return {
+      suggested: null,
+      floor,
+      ceiling,
+      reasoning: `buy box below break-even — do not list ($${buyBox.toFixed(2)} < floor $${floor.toFixed(2)}).`,
+    };
+  }
+  const suggested = round2(Math.min(Math.max(buyBox - 0.01, floor), ceiling));
+  return {
+    suggested,
+    floor,
+    ceiling,
+    reasoning:
+      suggested === floor
+        ? `penny under Buy Box would breach floor — held at floor $${floor.toFixed(2)}.`
+        : `$${suggested.toFixed(2)}: one penny under the $${buyBox.toFixed(2)} Buy Box, inside the floor $${floor.toFixed(2)} / ceiling $${ceiling.toFixed(2)} corridor.`,
+  };
+}
+
+// Convenience wrapper: derive a list-price suggestion from a per-channel
+// evaluation shape (verdict.ts sibling work) rather than raw numbers.
+export function suggestListPriceFromEvaluation(
+  evalLike: ChannelEvaluationLike,
+  channel: string
+): ListPriceSuggestion {
+  return suggestListPrice({
+    buyBoxPrice: evalLike.sellPrice, // spot sell price ≈ current Buy Box
+    floorPrice: evalLike.floorPrice,
+    channel,
+  });
+}
+
+// Minimal structural supabase-admin so this stays testable offline.
+export interface PriceMonitorAdminLike {
+  from(table: string): {
+    insert(values: Record<string, unknown>): PromiseLike<{ error: { message: string } | null }>;
+  };
+}
+
+export interface PriceMonitorRecord {
+  asin: string;
+  channel: string;
+  ourPrice: number | null;
+  buyBoxPrice: number | null;
+}
+
+// Log a price observation to price_monitor (migration 007_velocity_snapshots.sql,
+// sibling-owned). Observability only — never throws.
+export async function recordPriceMonitor(
+  admin: PriceMonitorAdminLike,
+  record: PriceMonitorRecord
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  try {
+    const { error } = await admin.from("price_monitor").insert({
+      asin: record.asin,
+      channel: record.channel,
+      our_price: record.ourPrice,
+      buy_box_price: record.buyBoxPrice,
+      checked_at: new Date().toISOString(),
+    });
+    if (error) return { ok: false, error: error.message };
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+export interface WatchlistRowLike {
+  asin: string;
+  channel?: string;
+  autoreprice_enabled?: boolean | null;
+  price_min?: number | null;
+  price_max?: number | null;
+}
+
+export interface MaybeAutorepriceInput {
+  watchlistRow: WatchlistRowLike;
+  suggestedPrice: number; // e.g. from suggestListPrice().suggested
+}
+
+// REQUIRES FOUNDER-APPROVED BOUNDS — do not enable live price changes.
+//
+// STUB ONLY: computes what it WOULD have done and always returns "skipped".
+// Nothing here calls SP-API; nothing changes a listing price. The bounds
+// (autoreprice_enabled + price_min/price_max on the watchlist row) are read
+// for validation only so the "would have" plan is realistic when the founder
+// approves real bounds later.
+export async function maybeAutoreprice(
+  input: MaybeAutorepriceInput
+): Promise<{ action: "skipped"; reason: string }> {
+  const would = `$${input.suggestedPrice.toFixed(2)}`;
+  const row = input.watchlistRow;
+  const notes: string[] = [];
+
+  if (!row.autoreprice_enabled) notes.push("autoreprice flag not enabled on watchlist row");
+  if (row.price_min != null && input.suggestedPrice < row.price_min)
+    notes.push(`suggested ${would} below price_min $${row.price_min.toFixed(2)} — would have held at floor/bound`);
+  if (row.price_max != null && input.suggestedPrice > row.price_max)
+    notes.push(`suggested ${would} above price_max $${row.price_max.toFixed(2)} — would have held at bound`);
+
+  const detail = notes.length ? ` (${notes.join("; ")})` : "";
+  return {
+    action: "skipped",
+    reason: `auto-reprice disabled pending founder-approved bounds — would have set ${would}${detail}`,
+  };
+}

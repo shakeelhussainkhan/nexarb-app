@@ -7,6 +7,8 @@
 // design.
 
 import type { MarketSnapshot } from "../data/types.ts";
+import type { SpApiConfig } from "./eligibility.ts";
+import type { SupabaseClient } from "@supabase/supabase-js";
 
 export interface VelocitySignals {
   bsr?: number; // current sales rank (snapshot)
@@ -117,6 +119,56 @@ export function suggestedQty(est: VelocityEstimate, s: VelocitySignals, maxDays:
   return Math.max(0, Math.min(cap, Math.floor(daily * maxDays)));
 }
 
+// Forward path: derive velocity signals from first-party snapshots. The
+// newest ranked snapshot supplies bsr/category; rank drops across the series
+// supply bsrDrops30d; the strongest bought-in-past-month reading is the floor.
+export function snapshotsToVelocitySignals(snapshots: MarketSnapshot[], opts?: { marketplace?: string }): VelocitySignals {
+  const series = (opts?.marketplace ? snapshots.filter((s) => s.marketplace === opts.marketplace) : snapshots)
+    .filter((s) => typeof s.salesRank === "number" && (s.salesRank as number) > 0);
+  const latest = series.slice().sort((a, b) => b.capturedAt.localeCompare(a.capturedAt))[0];
+  const bought = snapshots
+    .filter((s) => typeof s.boughtPastMonth === "number" && (s.boughtPastMonth as number) > 0)
+    .map((s) => s.boughtPastMonth as number);
+  const signals: VelocitySignals = {};
+  if (latest?.salesRank) signals.bsr = latest.salesRank;
+  if (latest?.category) signals.category = latest.category;
+  const drops = rankDrops(series);
+  if (drops > 0) signals.bsrDrops30d = drops;
+  if (bought.length > 0) signals.boughtPastMonth = Math.max(...bought);
+  if (typeof latest?.offerCount === "number" && latest.offerCount > 0) signals.fbaOffers = latest.offerCount;
+  return signals;
+}
+
+/**
+ * @deprecated Legacy relay deals carried Keepa-style fields (bsr,
+ * bsrDrops30d, boughtPastMonth) with no underlying snapshot series. Map them
+ * into a synthetic single snapshot so legacy deals can flow through the
+ * snapshot-based path until the first-party collector replaces the relay.
+ * Prefer real MarketSnapshots via snapshotsToVelocitySignals() instead.
+ * (Rank drops cannot be reconstructed from a legacy point-in-time reading.)
+ */
+export function legacyKeepaSignalsToSnapshots(
+  asin: string,
+  marketplace: string,
+  legacy: Pick<VelocitySignals, "bsr" | "bsrDrops30d" | "boughtPastMonth" | "category">,
+  sellPrice?: number
+): MarketSnapshot[] {
+  if (typeof legacy.bsr !== "number" && typeof legacy.boughtPastMonth !== "number") return [];
+  return [
+    {
+      asin,
+      marketplace,
+      price: typeof sellPrice === "number" ? sellPrice : null,
+      buyBoxPrice: typeof sellPrice === "number" ? sellPrice : null,
+      offerCount: null,
+      salesRank: typeof legacy.bsr === "number" ? legacy.bsr : null,
+      category: legacy.category ?? null,
+      boughtPastMonth: legacy.boughtPastMonth,
+      capturedAt: new Date().toISOString(),
+    },
+  ];
+}
+
 // ---------------------------------------------------------------------------
 // First-party snapshot series (NexArb price history).
 //
@@ -170,52 +222,157 @@ export function priceMedians(snapshots: MarketSnapshot[]): { buyBoxMedian?: numb
   return { buyBoxMedian: median(buyBox), priceMedian: median(price) };
 }
 
-// Forward path: derive velocity signals from first-party snapshots. The
-// newest ranked snapshot supplies bsr/category; rank drops across the series
-// supply bsrDrops30d; the strongest bought-in-past-month reading is the floor.
-export function snapshotsToVelocitySignals(snapshots: MarketSnapshot[], opts?: { marketplace?: string }): VelocitySignals {
-  const series = (opts?.marketplace ? snapshots.filter((s) => s.marketplace === opts.marketplace) : snapshots)
-    .filter((s) => typeof s.salesRank === "number" && (s.salesRank as number) > 0);
-  const latest = series.slice().sort((a, b) => b.capturedAt.localeCompare(a.capturedAt))[0];
-  const bought = snapshots
-    .filter((s) => typeof s.boughtPastMonth === "number" && (s.boughtPastMonth as number) > 0)
-    .map((s) => s.boughtPastMonth as number);
-  const signals: VelocitySignals = {};
-  if (latest?.salesRank) signals.bsr = latest.salesRank;
-  if (latest?.category) signals.category = latest.category;
-  const drops = rankDrops(series);
-  if (drops > 0) signals.bsrDrops30d = drops;
-  if (bought.length > 0) signals.boughtPastMonth = Math.max(...bought);
-  if (typeof latest?.offerCount === "number" && latest.offerCount > 0) signals.fbaOffers = latest.offerCount;
-  return signals;
+// ---------------------------------------------------------------------------
+// WS3: first-party velocity tracking (basic Keepa replacement).
+//
+// Sales-rank snapshots land in the `velocity_snapshots` table (migration
+// 007). A series of snapshots feeds snapshotsToVelocitySignals() above —
+// rank drops across the series approximate sale events (a floor on units).
+// No third-party data vendors involved. All persistence helpers are
+// best-effort: they never throw.
+// ---------------------------------------------------------------------------
+
+
+type FetchFn = typeof fetch;
+
+/**
+ * Read the current Amazon sales rank (BSR) + category for an ASIN via the
+ * SP-API Catalog Items 2022-04-01 API with includedData=salesRanks. Same LWA
+ * auth pattern as lib/spapi/pricing.ts. Never throws — returns nulls on any
+ * failure so callers treat "unknown" honestly.
+ */
+export async function fetchSalesRankSnapshot(
+  cfg: SpApiConfig,
+  asin: string,
+  fetchFn: FetchFn = fetch
+): Promise<{ rank: number | null; category: string | null }> {
+  const empty = { rank: null as number | null, category: null as string | null };
+  try {
+    const res = await fetchFn("https://api.amazon.com/auth/o2/token", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        grant_type: "refresh_token",
+        refresh_token: cfg.refreshToken,
+        client_id: cfg.clientId,
+        client_secret: cfg.clientSecret,
+      }).toString(),
+    });
+    if (!res.ok) return empty;
+    const tokenData = (await res.json()) as { access_token?: string };
+    if (!tokenData.access_token) return empty;
+
+    const endpoint = cfg.endpoint ?? "https://sellingpartnerapi-na.amazon.com";
+    const url =
+      `${endpoint}/catalog/2022-04-01/items/${encodeURIComponent(asin)}` +
+      `?marketplaceIds=${encodeURIComponent(cfg.marketplaceId)}` +
+      `&includedData=salesRanks`;
+    const itemRes = await fetchFn(url, {
+      headers: {
+        "x-amz-access-token": tokenData.access_token,
+        Accept: "application/json",
+      },
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!itemRes.ok) return empty;
+    const data = (await itemRes.json()) as {
+      salesRanks?: Array<{
+        classificationRanks?: Array<{ rank?: number; title?: string }>;
+        displayGroupRanks?: Array<{ rank?: number; title?: string }>;
+      }>;
+    };
+    const entry =
+      data.salesRanks?.[0]?.classificationRanks?.[0] ??
+      data.salesRanks?.[0]?.displayGroupRanks?.[0];
+    const rank = typeof entry?.rank === "number" && entry.rank > 0 ? entry.rank : null;
+    const category = typeof entry?.title === "string" && entry.title.length > 0 ? entry.title : null;
+    return { rank, category };
+  } catch {
+    return empty;
+  }
 }
 
 /**
- * @deprecated Legacy relay deals carried Keepa-style fields (bsr,
- * bsrDrops30d, boughtPastMonth) with no underlying snapshot series. Map them
- * into a synthetic single snapshot so legacy deals can flow through the
- * snapshot-based path until the first-party collector replaces the relay.
- * Prefer real MarketSnapshots via snapshotsToVelocitySignals() instead.
- * (Rank drops cannot be reconstructed from a legacy point-in-time reading.)
+ * Persist one rank snapshot. Best-effort: never throws.
  */
-export function legacyKeepaSignalsToSnapshots(
+export async function recordVelocitySnapshot(
+  admin: SupabaseClient,
   asin: string,
-  marketplace: string,
-  legacy: Pick<VelocitySignals, "bsr" | "bsrDrops30d" | "boughtPastMonth" | "category">,
-  sellPrice?: number
-): MarketSnapshot[] {
-  if (typeof legacy.bsr !== "number" && typeof legacy.boughtPastMonth !== "number") return [];
-  return [
-    {
+  rank: number | null,
+  category: string | null
+): Promise<void> {
+  try {
+    await admin.from("velocity_snapshots").insert({
       asin,
-      marketplace,
-      price: typeof sellPrice === "number" ? sellPrice : null,
-      buyBoxPrice: typeof sellPrice === "number" ? sellPrice : null,
+      sales_rank: rank,
+      category,
+    });
+  } catch {
+    // Persistence is observability, not correctness — never break the check.
+  }
+}
+
+/**
+ * Build VelocitySignals from the stored snapshot series for an ASIN.
+ * Returns an empty signal set ("insufficient data") when fewer than 2
+ * snapshots exist — callers downstream (estimateVelocity) then report
+ * confidence "unknown" rather than fabricating a number.
+ */
+export async function getVelocitySignals(
+  admin: SupabaseClient,
+  asin: string,
+  opts?: { limit?: number }
+): Promise<VelocitySignals> {
+  try {
+    const { data, error } = await admin
+      .from("velocity_snapshots")
+      .select("sales_rank, category, checked_at")
+      .eq("asin", asin)
+      .order("checked_at", { ascending: true })
+      .limit(opts?.limit ?? 500);
+    if (error) return {};
+    const rows = (data ?? []) as Array<{
+      sales_rank: number | null;
+      category: string | null;
+      checked_at: string;
+    }>;
+    if (rows.length < 2) return {};
+    const snapshots: MarketSnapshot[] = rows.map((r) => ({
+      asin,
+      marketplace: "amazon",
+      price: null,
+      buyBoxPrice: null,
       offerCount: null,
-      salesRank: typeof legacy.bsr === "number" ? legacy.bsr : null,
-      category: legacy.category ?? null,
-      boughtPastMonth: legacy.boughtPastMonth,
-      capturedAt: new Date().toISOString(),
-    },
-  ];
+      salesRank: typeof r.sales_rank === "number" ? r.sales_rank : null,
+      category: r.category,
+      capturedAt: r.checked_at,
+    }));
+    return snapshotsToVelocitySignals(snapshots, { marketplace: "amazon" });
+  } catch {
+    return {};
+  }
+}
+
+export type BsrTrend = "positive" | "neutral" | "negative" | "insufficient";
+
+/**
+ * Direction of the BSR series: compare the average rank of the newer half
+ * against the older half (lower rank = selling faster). Needs at least 2
+ * ranked snapshots, otherwise "insufficient".
+ */
+export function bsrTrend(snapshots: MarketSnapshot[], tolerance = 0.1): BsrTrend {
+  const ranked = snapshots
+    .filter((s) => typeof s.salesRank === "number" && (s.salesRank as number) > 0)
+    .sort((a, b) => a.capturedAt.localeCompare(b.capturedAt));
+  if (ranked.length < 2) return "insufficient";
+  const half = Math.max(1, Math.floor(ranked.length / 2));
+  const older = ranked.slice(0, ranked.length - half);
+  const newer = ranked.slice(ranked.length - half);
+  const avg = (xs: MarketSnapshot[]) =>
+    xs.reduce((acc, s) => acc + (s.salesRank as number), 0) / xs.length;
+  const oldAvg = avg(older);
+  const newAvg = avg(newer);
+  if (newAvg < oldAvg * (1 - tolerance)) return "positive";
+  if (newAvg > oldAvg * (1 + tolerance)) return "negative";
+  return "neutral";
 }
