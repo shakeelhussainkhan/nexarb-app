@@ -1,8 +1,6 @@
 import { NextResponse } from "next/server";
 import { auth } from "@clerk/nextjs/server";
-import { runDealCheck, persistDealCheck } from "@/lib/engine/dealcheck";
-import { getSupabaseAdmin } from "@/lib/supabase";
-import { supabaseIsConfigured } from "@/lib/engine/guards";
+import { runWatchlistScan } from "@/lib/engine/scan";
 
 // POST /api/scan/trigger
 // First-party scan: runs every active watchlist item through the full
@@ -13,79 +11,29 @@ export async function POST(): Promise<NextResponse> {
   const { userId } = await auth();
   if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-  if (!supabaseIsConfigured(process.env)) {
-    return NextResponse.json(
-      { success: false, error: "Supabase is not configured — nowhere to store scan results." },
-      { status: 503 }
-    );
+  let scan;
+  try {
+    scan = await runWatchlistScan({ userId });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Scan failed";
+    return NextResponse.json({ success: false, error: message }, { status: 503 });
   }
 
-  const admin = getSupabaseAdmin();
-  const { data: items, error } = await admin
-    .from("watchlist")
-    .select("asin, buy_price, category")
-    .eq("active", true)
-    .order("added_at", { ascending: true })
-    .limit(25);
-
-  if (error) {
-    return NextResponse.json(
-      { success: false, error: `Could not read watchlist: ${error.message}` },
-      { status: 503 }
-    );
-  }
-
-  const list = (items ?? []) as Array<{ asin: string; buy_price: number | string; category: string | null }>;
-  if (list.length === 0) {
+  if (scan.checked === 0) {
     return NextResponse.json({
       success: true,
       message: "Watchlist is empty — add ASINs to scan.",
       checked: 0,
+      buys: 0,
       results: [],
     });
   }
 
-  const results: Array<{
-    asin: string;
-    verdict: string;
-    eligibility: string;
-    sellPrice: number | null;
-    wouldCreateIntent: boolean;
-  }> = [];
-
-  for (const item of list) {
-    try {
-      const trace = await runDealCheck(
-        item.asin,
-        Number(item.buy_price),
-        10,
-        item.category ?? undefined
-      );
-      await persistDealCheck(trace, userId);
-      results.push({
-        asin: trace.asin,
-        verdict: trace.verdict.state,
-        eligibility: trace.eligibility.state,
-        sellPrice: trace.inputs.sellPrice.value,
-        wouldCreateIntent: trace.guards.wouldCreateIntent,
-      });
-    } catch {
-      results.push({
-        asin: item.asin,
-        verdict: "UNKNOWN",
-        eligibility: "UNKNOWN",
-        sellPrice: null,
-        wouldCreateIntent: false,
-      });
-    }
-  }
-
-  const buys = results.filter((r) => r.verdict === "BUY").length;
   return NextResponse.json({
     success: true,
-    message: `Scan complete: ${results.length} checked, ${buys} BUY.`,
-    checked: results.length,
-    buys,
-    results,
+    message: `Scan complete: ${scan.checked} checked, ${scan.buys} BUY.`,
+    checked: scan.checked,
+    buys: scan.buys,
+    results: scan.results,
   });
 }

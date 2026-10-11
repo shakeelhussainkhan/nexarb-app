@@ -20,6 +20,9 @@ interface Deal {
   verifiedPrice: boolean;
   category: string;
   timestamp: string;
+  // Source-trust assessment (server-computed via lib/engine/trust.ts).
+  // Optional until the /api/deals mapping is hooked up.
+  trust?: { level: "verified-retailer" | "unverified"; notes: string[] };
 }
 
 interface DealsStats {
@@ -797,13 +800,16 @@ export default function DashboardClient() {
                             </td>
                             <td className="px-4 py-3.5 text-gray-500 whitespace-nowrap">{deal.bsr.toLocaleString()}</td>
                             <td className="px-4 py-3.5 whitespace-nowrap">
-                              <span
-                                className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium"
-                                style={{ background: channelColor.bg, color: channelColor.text }}
-                              >
-                                <span className="w-1.5 h-1.5 rounded-full" style={{ background: channelColor.dot }} />
-                                {deal.channel.charAt(0).toUpperCase() + deal.channel.slice(1)}
-                              </span>
+                              <div className="inline-flex items-center gap-1.5">
+                                <span
+                                  className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium"
+                                  style={{ background: channelColor.bg, color: channelColor.text }}
+                                >
+                                  <span className="w-1.5 h-1.5 rounded-full" style={{ background: channelColor.dot }} />
+                                  {deal.channel.charAt(0).toUpperCase() + deal.channel.slice(1)}
+                                </span>
+                                {deal.trust && <TrustBadge trust={deal.trust} />}
+                              </div>
                             </td>
                             <td className="px-4 py-3.5 whitespace-nowrap">
                               <ConfidenceBadge confidence={deal.confidence} />
@@ -993,6 +999,20 @@ function PriceTypeBadge({ verified }: { verified: boolean }) {
       style={verified ? { background: "#F0FDF4", color: "#16A34A" } : { background: "#FFFBEB", color: "#D97706" }}
     >
       {verified ? "✓ Verified" : "~ Estimated"}
+    </span>
+  );
+}
+
+// Source-trust badge. Pure assessment, never blocks a purchase — advisory only.
+function TrustBadge({ trust }: { trust: { level: "verified-retailer" | "unverified"; notes: string[] } }) {
+  const verified = trust.level === "verified-retailer";
+  return (
+    <span
+      className="inline-flex items-center rounded-full px-2 py-1 text-xs font-semibold whitespace-nowrap"
+      style={verified ? { background: "#F0FDF4", color: "#16A34A" } : { background: "#FFFBEB", color: "#D97706" }}
+      title={trust.notes.join(" · ")}
+    >
+      {verified ? "✓ Retail" : "⚠ Check source"}
     </span>
   );
 }
