@@ -24,10 +24,14 @@ const okFetch = async (url, init) => {
       ok: true,
       json: async () => ({
         payload: [{
-          CompetitivePricing: {
-            CompetitivePrices: [
-              { Price: { LandedPrice: { Amount: 12.34, CurrencyCode: "USD" } }, subcondition: "New", belongsToRequester: false },
-            ],
+          status: "Success",
+          ASIN: "B004IR3044",
+          Product: {
+            CompetitivePricing: {
+              CompetitivePrices: [
+                { Price: { LandedPrice: { Amount: 12.34, CurrencyCode: "USD" } }, subcondition: "New", belongsToRequester: false },
+              ],
+            },
           },
         }],
       }),
@@ -54,7 +58,7 @@ check(
 const emptyFetch = async (url, init) => {
   const u = String(url);
   if (u.includes("api.amazon.com")) return { ok: true, json: async () => ({ access_token: "tok" }) };
-  return { ok: true, json: async () => ({ payload: [{ CompetitivePricing: { CompetitivePrices: [] } }] }) };
+  return { ok: true, json: async () => ({ payload: [{ status: "Success", Product: { CompetitivePricing: { CompetitivePrices: [] } } }] }) };
 };
 const r2 = await getLiveSellPrice(cfg, "B004IR3044", emptyFetch);
 check("empty prices -> null, not zero", r2.price === null && r2.source === "error");

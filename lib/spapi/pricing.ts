@@ -84,12 +84,16 @@ export async function getLiveSellPrice(
     }
     const data = (await res.json()) as {
       payload?: Array<{
-        CompetitivePricing?: { CompetitivePrices?: CompetitivePriceEntry[] };
         status?: string;
+        ASIN?: string;
+        Product?: {
+          CompetitivePricing?: { CompetitivePrices?: CompetitivePriceEntry[] };
+        };
+        CompetitivePricing?: { CompetitivePrices?: CompetitivePriceEntry[] };
       }>;
     };
     const entries =
-      data.payload?.[0]?.CompetitivePricing?.CompetitivePrices ?? [];
+      data.payload?.[0]?.Product?.CompetitivePricing?.CompetitivePrices ?? [];
     if (!entries.length) {
       return fail("No competitive prices returned for this ASIN.");
     }
