@@ -184,7 +184,7 @@ export default function SettingsPage() {
             </div>
             <div className="rounded-xl bg-blue-50 border border-blue-100 p-4 text-sm text-blue-800 space-y-1">
               <p className="font-semibold mb-1">How to connect:</p>
-              <p>1. Open Telegram and search <span className="font-mono bg-blue-100 px-1.5 py-0.5 rounded">@NexArbBot</span></p>
+              <p>1. Open Telegram and search <span className="font-mono bg-blue-100 px-1.5 py-0.5 rounded">@NexArb1_bot</span></p>
               <p>2. Send <span className="font-mono bg-blue-100 px-1.5 py-0.5 rounded">/start</span> to the bot</p>
               <p>3. The bot will reply with your Chat ID — paste it below</p>
             </div>
