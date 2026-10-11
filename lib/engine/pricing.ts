@@ -1,6 +1,6 @@
 // Smart sell-price engine (fee-stack aware).
 // All fee figures here are ESTIMATES until real per-ASIN fee data (SP-API /
-// Keepa) is wired in. Callers must surface that to the user — never present an
+// NexArb price history) is wired in. Callers must surface that to the user — never present an
 // estimated floor as exact.
 
 export interface CostInputs {
