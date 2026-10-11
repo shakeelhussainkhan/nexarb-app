@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { auth, clerkClient } from "@clerk/nextjs/server";
+import { auth } from "@clerk/nextjs/server";
 import { getSupabaseAdmin } from "@/lib/supabase";
 
 export async function GET() {
@@ -10,37 +10,28 @@ export async function GET() {
     }
 
     const admin = getSupabaseAdmin();
-    const { data } = await admin
+
+    // 1) Existing row wins.
+    const { data: existing } = await admin
       .from("nexarb_subscriptions")
       .select("*")
       .eq("user_id", userId)
-      .single();
-
-    if (data) {
-      return NextResponse.json({ subscription: data });
+      .maybeSingle();
+    if (existing) {
+      return NextResponse.json({ subscription: existing });
     }
 
-    // Founder bootstrap (2026-10-10): the subscriptions table can be empty
-    // (e.g. webhook never created a row), in which case the UI falls back to
-    // "free". Provision an unlimited, non-expiring agency subscription for any
-    // authenticated user with no row.
+    // 2) Founder bootstrap (2026-10-10): the subscriptions table can be empty
+    // (webhook never created a row), in which case the UI falls back to
+    // "free". Provision an unlimited, non-expiring agency subscription.
     // TODO: replace with 14-day trial provisioning before onboarding paying
     // customers — this must not grant agency to the public.
-    let email = "";
-    try {
-      const client = await clerkClient();
-      const user = await client.users.getUser(userId);
-      email = user.emailAddresses[0]?.emailAddress ?? "";
-    } catch {
-      // email stays empty; row is still provisioned
-    }
-
     const { data: created, error } = await admin
       .from("nexarb_subscriptions")
       .upsert(
         {
           user_id: userId,
-          email,
+          email: "",
           plan: "agency",
           status: "active",
           trial_ends_at: null,
@@ -49,13 +40,19 @@ export async function GET() {
         { onConflict: "user_id" }
       )
       .select()
-      .single();
+      .maybeSingle();
 
-    if (error || !created) {
-      return NextResponse.json({ subscription: null });
+    if (error) {
+      console.error("[subscription] auto-provision failed:", error.message);
     }
-    return NextResponse.json({ subscription: created });
-  } catch {
-    return NextResponse.json({ subscription: null });
+    // provisionError is a diagnostic aid; the UI ignores it.
+    return NextResponse.json({
+      subscription: created ?? null,
+      provisionError: error?.message ?? null,
+    });
+  } catch (e) {
+    const message = e instanceof Error ? e.message : "unknown error";
+    console.error("[subscription] GET failed:", message);
+    return NextResponse.json({ subscription: null, provisionError: message });
   }
 }
