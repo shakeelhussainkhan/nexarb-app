@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
-
-const BACKEND_URL = "http://137.184.184.27:3001";
+import { auth } from "@clerk/nextjs/server";
+import { getSupabaseAdmin } from "@/lib/supabase";
+import { supabaseIsConfigured } from "@/lib/engine/guards";
 
 export interface DealsStats {
   totalToday: number;
@@ -22,15 +23,53 @@ const FALLBACK: DealsStats = {
   channelBreakdown: { amazon: 0, walmart: 0, alibaba: 0 },
 };
 
+// GET /api/deals/stats — computed from first-party deal_checks + purchases.
 export async function GET(): Promise<NextResponse> {
+  const { userId } = await auth();
+  if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
+  if (!supabaseIsConfigured(process.env)) {
+    return NextResponse.json(FALLBACK, { status: 200 });
+  }
+
   try {
-    const res = await fetch(`${BACKEND_URL}/deals/stats`, {
-      cache: "no-store",
-      signal: AbortSignal.timeout(8000),
-    });
-    if (!res.ok) throw new Error(`Backend returned ${res.status}`);
-    const data: DealsStats = await res.json();
-    return NextResponse.json(data);
+    const admin = getSupabaseAdmin();
+    const since = new Date();
+    since.setUTCHours(0, 0, 0, 0);
+
+    const [{ data: checks }, { data: purchases }] = await Promise.all([
+      admin
+        .from("deal_checks")
+        .select("verdict, margin_pct, net_profit")
+        .gte("checked_at", since.toISOString()),
+      admin
+        .from("purchases")
+        .select("id")
+        .eq("status", "PENDING_APPROVAL"),
+    ]);
+
+    const rows = (checks ?? []) as Array<{
+      verdict: string;
+      margin_pct: number | string | null;
+      net_profit: number | string | null;
+    }>;
+    const buys = rows.filter((r) => r.verdict === "BUY");
+    const margins = buys
+      .map((r) => (r.margin_pct === null ? null : Number(r.margin_pct)))
+      .filter((m): m is number => m !== null && Number.isFinite(m));
+    const profits = buys
+      .map((r) => (r.net_profit === null ? null : Number(r.net_profit)))
+      .filter((p): p is number => p !== null && Number.isFinite(p));
+
+    return NextResponse.json({
+      totalToday: rows.length,
+      pendingCount: (purchases ?? []).length,
+      avgMargin: margins.length
+        ? Math.round((margins.reduce((a, b) => a + b, 0) / margins.length) * 10) / 10
+        : 0,
+      estTotalProfit: Math.round(profits.reduce((a, b) => a + b, 0) * 100) / 100,
+      channelBreakdown: { amazon: rows.length, walmart: 0, alibaba: 0 },
+    } satisfies DealsStats);
   } catch {
     return NextResponse.json(FALLBACK, { status: 200 });
   }

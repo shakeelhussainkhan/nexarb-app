@@ -1,17 +1,38 @@
 import { NextResponse } from "next/server";
+import { auth } from "@clerk/nextjs/server";
+import { checkWalmartHealth, walmartConfigFromEnv } from "@/lib/walmart/client";
+import { spApiConfigFromEnv } from "@/lib/engine/eligibility";
 
-const BACKEND_URL = "http://137.184.184.27:3001";
-
+// GET /api/health — first-party engine health.
+// Reports the live connectivity of the two official APIs NexArb runs on.
+// No relay involved; the dashboard badge reads this.
 export async function GET(): Promise<NextResponse> {
+  const { userId } = await auth();
+  if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
+  const spCfg = spApiConfigFromEnv(process.env);
+  const spApiConfigured = spCfg !== null;
+
+  let walmart: { connected: boolean; reason: string };
   try {
-    const res = await fetch(`${BACKEND_URL}/health`, {
-      cache: "no-store",
-      signal: AbortSignal.timeout(5000),
-    });
-    if (!res.ok) throw new Error(`Backend returned ${res.status}`);
-    const data: unknown = await res.json();
-    return NextResponse.json(data);
-  } catch {
-    return NextResponse.json({ status: "offline" }, { status: 503 });
+    const w = await checkWalmartHealth(walmartConfigFromEnv(process.env));
+    walmart = { connected: w.connected, reason: w.connected ? "ok" : (w.reason ?? "not connected") };
+  } catch (e) {
+    walmart = {
+      connected: false,
+      reason: e instanceof Error ? e.message : "check failed",
+    };
   }
+
+  const online = spApiConfigured || walmart.connected;
+  return NextResponse.json(
+    {
+      status: online ? "online" : "offline",
+      engine: "nexarb-first-party",
+      spApi: { configured: spApiConfigured },
+      walmart,
+      checkedAt: new Date().toISOString(),
+    },
+    { status: online ? 200 : 503 }
+  );
 }

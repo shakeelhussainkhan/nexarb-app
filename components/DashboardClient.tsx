@@ -521,7 +521,7 @@ export default function DashboardClient() {
               className={`w-2 h-2 rounded-full ${serverOnline === true ? "bg-green-500 animate-pulse" : serverOnline === false ? "bg-red-500" : "bg-gray-300"}`}
             />
             <span style={{ color: serverOnline === true ? "#16A34A" : serverOnline === false ? "#EF4444" : "#9CA3AF" }}>
-              {serverOnline === true ? "ArbitrAI Online" : serverOnline === false ? "ArbitrAI Offline" : "Checking…"}
+              {serverOnline === true ? "Engine Online" : serverOnline === false ? "Engine Offline" : "Checking…"}
             </span>
           </div>
 
