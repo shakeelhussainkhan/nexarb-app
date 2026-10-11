@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { auth } from "@clerk/nextjs/server";
 import { getSupabaseAdmin } from "@/lib/supabase";
 import { supabaseIsConfigured } from "@/lib/engine/guards";
+import { assessTrust } from "@/lib/engine/trust";
 
 export interface DealEngine {
   verdict: "BUY" | "SKIP" | "UNKNOWN";
@@ -15,6 +16,22 @@ export interface DealEngine {
   velocityConfidence: string;
   daysToClear: number | null;
   suggestedQty: number;
+  // Multi-channel breakdown. deal_checks stores only the chosen/lead
+  // channel's numbers (no channels column — migrations out of scope), so
+  // this is the honest minimum reconstructed from the row: the priced
+  // channel carries the row's numbers; the Walmart channel is unavailable
+  // until a real competitive-pricing endpoint exists (lib/walmart/pricing.ts).
+  channels: DealChannel[];
+  chosenChannel: "amazon-fba" | "walmart-wfs" | null;
+}
+
+export interface DealChannel {
+  channel: "amazon-fba" | "walmart-wfs";
+  sellPrice: number | null;
+  sellPriceSource: string;
+  netProfit: number;
+  marginPct: number;
+  verdict: "BUY" | "SKIP" | "UNKNOWN";
 }
 
 export interface Deal {
@@ -31,6 +48,7 @@ export interface Deal {
   verifiedPrice: boolean;
   category: string;
   timestamp: string;
+  trust: { level: "verified-retailer" | "unverified"; notes: string[] };
   engine: DealEngine;
 }
 
@@ -85,6 +103,55 @@ export async function GET(): Promise<NextResponse> {
     const floorPrice = row.floor_price === null ? 0 : Number(row.floor_price);
     const verdict =
       row.verdict === "BUY" || row.verdict === "SKIP" ? row.verdict : "UNKNOWN";
+    // Reconstruct the per-channel breakdown from the chosen-channel row.
+    // Only "sp-api-pricing" rows carry a real priced channel today; anything
+    // else means no channel had price data. chosenChannel is set only for
+    // BUY rows (pre-channels rows were all Amazon).
+    const amazonPriced = row.sell_price_source === "sp-api-pricing";
+    const walmartPriced =
+      !amazonPriced && row.sell_price_source.startsWith("walmart");
+    const amazonChannel: DealChannel = amazonPriced
+      ? {
+          channel: "amazon-fba",
+          sellPrice,
+          sellPriceSource: row.sell_price_source,
+          netProfit,
+          marginPct: margin,
+          // Aggregate verdict == channel verdict when a single channel
+          // carried price data (velocity-UNKNOWN folds into aggregate SKIP).
+          verdict,
+        }
+      : {
+          channel: "amazon-fba",
+          sellPrice: null,
+          sellPriceSource: row.sell_price_source,
+          netProfit: 0,
+          marginPct: 0,
+          verdict: "UNKNOWN",
+        };
+    const walmartChannel: DealChannel = walmartPriced
+      ? {
+          channel: "walmart-wfs",
+          sellPrice,
+          sellPriceSource: row.sell_price_source,
+          netProfit,
+          marginPct: margin,
+          verdict,
+        }
+      : {
+          channel: "walmart-wfs",
+          sellPrice: null,
+          // The seller API exposes no competitive pricing (lib/walmart/pricing.ts).
+          sellPriceSource: "unavailable",
+          netProfit: 0,
+          marginPct: 0,
+          verdict: "UNKNOWN",
+        };
+    let chosenChannel: DealEngine["chosenChannel"] = null;
+    if (verdict === "BUY") {
+      if (amazonPriced) chosenChannel = "amazon-fba";
+      else if (walmartPriced) chosenChannel = "walmart-wfs";
+    }
     deals.push({
       id: row.id,
       asin: row.asin,
@@ -95,6 +162,7 @@ export async function GET(): Promise<NextResponse> {
       margin,
       bsr: 0,
       channel: row.buy_source.includes("walmart") ? "Walmart" : "Manual",
+      trust: assessTrust(row.buy_source),
       confidence:
         row.sell_price_source === "sp-api-pricing" && row.eligibility !== "UNKNOWN"
           ? "High"
@@ -114,6 +182,8 @@ export async function GET(): Promise<NextResponse> {
         velocityConfidence: "low",
         daysToClear: null,
         suggestedQty: row.qty ?? 10,
+        channels: [amazonChannel, walmartChannel],
+        chosenChannel,
       },
     });
   }
