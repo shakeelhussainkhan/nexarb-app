@@ -18,6 +18,8 @@ export interface LiveSellPrice {
   reason: string; // human-readable provenance, always set
   checkedAt: string; // ISO
   source: "sp-api-pricing" | "error";
+  /** True when the picked competitive price is our own offer (we hold the Buy Box lane); false when it's a competitor's; null when unknown/lookup failed. */
+  belongsToRequester: boolean | null;
 }
 
 async function getAccessToken(cfg: SpApiConfig, fetchFn: FetchFn): Promise<string> {
@@ -61,6 +63,7 @@ export async function getLiveSellPrice(
     reason,
     checkedAt,
     source: "error",
+    belongsToRequester: null,
   });
   try {
     const token = await getAccessToken(cfg, fetchFn);
@@ -114,6 +117,7 @@ export async function getLiveSellPrice(
         : "Live landed competitive price (Buy Box lane).",
       checkedAt,
       source: "sp-api-pricing",
+      belongsToRequester: pick?.belongsToRequester ?? null,
     };
   } catch (e) {
     return fail(

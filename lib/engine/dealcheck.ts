@@ -44,6 +44,8 @@ export interface DealCheckTrace {
   inputs: {
     buyPrice: { value: number; source: string; note: string };
     sellPrice: { value: number | null; source: string; reason: string; checkedAt: string };
+    /** Who holds the Amazon Buy Box lane: "us" (our own offer), "competitor", or "unknown". */
+    buyboxWinner: "us" | "competitor" | "unknown";
   };
   eligibility: { state: string; reasons: string[]; source: string; checkedAt: string };
   verdict: {
@@ -123,6 +125,7 @@ export async function runDealCheck(
           reason: "SP-API not configured — live sell price unavailable.",
           checkedAt: new Date().toISOString(),
           source: "error" as const,
+          belongsToRequester: null as boolean | null,
         }),
     // Walmart competitive pricing is unavailable (see lib/walmart/pricing.ts
     // for the investigation). The lookup never throws by contract; guard it
@@ -212,6 +215,12 @@ export async function runDealCheck(
         note: "Observed retailer price provided.",
       },
       sellPrice: chosenSellPriceInput,
+      buyboxWinner:
+        sellPrice.belongsToRequester === true
+          ? "us"
+          : sellPrice.belongsToRequester === false
+            ? "competitor"
+            : "unknown",
     },
     eligibility: {
       state: eligibility.state,
@@ -278,6 +287,9 @@ export async function persistDealCheck(
       would_create_intent: trace.guards.wouldCreateIntent,
       guard_reasons: trace.guards.reasons,
       checked_by: checkedBy,
+      // Buy Box winner capture (migration 010). Pre-migration rows read back
+      // NULL; the history endpoint surfaces those as "unknown".
+      buybox_winner: trace.inputs.buyboxWinner,
     });
   } catch {
     // Persistence is observability, not correctness — never break the check.
