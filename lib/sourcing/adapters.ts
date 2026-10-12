@@ -7,8 +7,9 @@
 
 import type { RetailerAdapter } from "./types";
 import { walmartAdapter } from "./walmart";
+import { costcoAdapter } from "./costco";
 
-export const retailerAdapters: RetailerAdapter[] = [walmartAdapter];
+export const retailerAdapters: RetailerAdapter[] = [walmartAdapter, costcoAdapter];
 
 export function getAdapter(slug: string): RetailerAdapter | undefined {
   return retailerAdapters.find((a) => a.slug === slug);

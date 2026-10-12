@@ -30,9 +30,9 @@ export interface SweepResult {
 }
 
 export interface SweepOptions {
-  maxItems?: number; // default 50, hard cap
+  maxItems?: number; // default 50, hard cap 100
   fetchUpc?: boolean; // default true: fetch each product page for UPC
-  maxUpcFetches?: number; // default 25
+  maxUpcFetches?: number; // default 25 (callers doing bulk runs pass 100)
   fetchFn?: typeof fetch; // injectable for tests
   delayMs?: number; // default 800 between requests
 }
@@ -43,7 +43,7 @@ const BASE = "https://www.walmart.com";
 const UA =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 
-const MAX_ITEMS_HARD_CAP = 50;
+const MAX_ITEMS_HARD_CAP = 100;
 const MAX_ERRORS = 20;
 
 function pageHeaders(): Record<string, string> {

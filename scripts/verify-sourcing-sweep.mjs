@@ -47,13 +47,13 @@ check(
   );
 }
 
-// 4. Caps at 25 new rows per run
+// 4. Caps at 100 new rows per run
 {
-  const many = Array.from({ length: 60 }, (_, i) => m(`B${String(i).padStart(3, "0")}`));
+  const many = Array.from({ length: 150 }, (_, i) => m(`B${String(i).padStart(3, "0")}`));
   const rows = buildWatchlistPayload(many, []);
   check(
-    "caps payload at 25 new rows",
-    rows.length === 25 && MAX_NEW_WATCHLIST_ROWS === 25,
+    "caps payload at 100 new rows",
+    rows.length === 100 && MAX_NEW_WATCHLIST_ROWS === 100,
     `got ${rows.length}`
   );
 }

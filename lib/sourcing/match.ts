@@ -6,12 +6,19 @@
 //
 // IMPORTANT: the production SP-API app currently holds only the Product
 // Listing role; Catalog Items may answer 403. Non-200 responses resolve to
-// { match: null, reason } — never thrown, never retried.
+// { match: null, reason } — never thrown. Callers doing bulk lookups should
+// pass a throttled fetch (lib/sourcing/throttle.ts) so 429s back off with
+// retries instead of failing the run.
 //
 // This module only looks up catalog data. It never creates offers,
 // never purchases, never modifies anything.
 
 import type { SpApiConfig } from "@/lib/engine/eligibility";
+import {
+  createTokenCache,
+  getCachedAccessToken,
+  type TokenCache,
+} from "./throttle";
 
 type FetchFn = typeof fetch;
 
@@ -26,7 +33,24 @@ export interface MatchOutcome {
   reason: string;
 }
 
-async function getAccessToken(cfg: SpApiConfig, fetchFn: FetchFn): Promise<string> {
+/** Optional per-run tuning for matchUpcToAsin. */
+export interface MatchOptions {
+  /**
+   * Shared LWA token cache for the run. When provided, the access token is
+   * fetched once and reused across lookups (100 lookups = 1 token exchange).
+   * When omitted, the previous per-call exchange behavior is kept.
+   */
+  tokenCache?: TokenCache;
+}
+
+export { createTokenCache, type TokenCache };
+
+async function getAccessToken(
+  cfg: SpApiConfig,
+  fetchFn: FetchFn,
+  tokenCache?: TokenCache
+): Promise<string> {
+  if (tokenCache) return getCachedAccessToken(cfg, fetchFn, tokenCache);
   const res = await fetchFn("https://api.amazon.com/auth/o2/token", {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
@@ -97,7 +121,8 @@ function normalizeUpc(upc: string): string | null {
 export async function matchUpcToAsin(
   cfg: import("@/lib/engine/eligibility").SpApiConfig | null,
   upc: string,
-  fetchFn: FetchFn = fetch
+  fetchFn: FetchFn = fetch,
+  opts?: MatchOptions
 ): Promise<MatchOutcome> {
   if (!cfg) {
     return { match: null, reason: "SP-API not configured" };
@@ -107,7 +132,7 @@ export async function matchUpcToAsin(
     return { match: null, reason: "invalid UPC format" };
   }
   try {
-    const token = await getAccessToken(cfg, fetchFn);
+    const token = await getAccessToken(cfg, fetchFn, opts?.tokenCache);
     const endpoint = cfg.endpoint ?? "https://sellingpartnerapi-na.amazon.com";
     const url =
       `${endpoint}/catalog/2022-04-01/items` +
