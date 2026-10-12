@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { auth } from "@clerk/nextjs/server";
 import { runWatchlistScan } from "@/lib/engine/scan";
+import { sendBuyAlert } from "@/lib/telegram/alerts";
 
 // POST /api/scan/trigger
 // First-party scan: runs every active watchlist item through the full
@@ -29,11 +30,25 @@ export async function POST(): Promise<NextResponse> {
     });
   }
 
+  // Telegram BUY alerts — notifications only, nothing purchases.
+  let alertsSent = 0;
+  const errors: string[] = [];
+  for (const trace of scan.buyTraces) {
+    const res = await sendBuyAlert(trace);
+    if (res.ok) {
+      alertsSent++;
+    } else {
+      errors.push(`alert failed for ${trace.asin}: ${res.error ?? "unknown error"}`);
+    }
+  }
+
   return NextResponse.json({
     success: true,
     message: `Scan complete: ${scan.checked} checked, ${scan.buys} BUY.`,
     checked: scan.checked,
     buys: scan.buys,
+    alertsSent,
+    errors,
     results: scan.results,
   });
 }
