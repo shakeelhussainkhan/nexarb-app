@@ -132,3 +132,75 @@ export async function sendBuyAlert(
     return { ok: false, error: err instanceof Error ? err.message : "alert failed" };
   }
 }
+
+// --- Price-drop alerts -------------------------------------------------------
+// Fired by the scan when a watched ASIN's price drops into buy territory or
+// drops significantly — even when the scan verdict itself wasn't a BUY.
+// Notifications only, never purchases.
+
+export type PriceDropReason = "new-dip" | "price-drop-15pct";
+
+export interface PriceDropAlertInput {
+  asin: string;
+  title?: string | null;
+  reason: PriceDropReason;
+  detail: string; // human-readable trigger detail from evaluatePriceAlert
+  currentPrice: number;
+  referencePrice: number | null;
+  dropPct: number | null;
+}
+
+const PRICE_DROP_HEADLINE: Record<PriceDropReason, string> = {
+  "new-dip": "Genuine dip",
+  "price-drop-15pct": "Big price drop",
+};
+
+/** Builds the HTML price-drop alert body. Pure — safe to test offline. */
+export function formatPriceDropAlertMessage(input: PriceDropAlertInput): string {
+  const headline = (input.title ?? "").trim() || input.asin;
+  const dropLine =
+    input.referencePrice !== null && input.dropPct !== null
+      ? `${money(input.referencePrice)} → ${money(input.currentPrice)} (−${input.dropPct.toFixed(1)}%)\n`
+      : `Now ${money(input.currentPrice)}\n`;
+  return (
+    `📉 PRICE DROP — ${escapeHtml(headline)}\n` +
+    `${PRICE_DROP_HEADLINE[input.reason]}\n` +
+    dropLine +
+    `${escapeHtml(input.detail)}\n` +
+    `ASIN: ${escapeHtml(input.asin)}\n` +
+    `https://www.amazon.com/dp/${input.asin}`
+  );
+}
+
+/** Send a price-drop alert. Never throws. */
+export async function sendPriceDropAlert(
+  input: PriceDropAlertInput,
+  env: NodeJS.ProcessEnv = process.env
+): Promise<AlertResult> {
+  try {
+    const token = (env.TELEGRAM_BOT_TOKEN ?? "").trim();
+    if (!token) return { ok: false, error: "TELEGRAM_BOT_TOKEN not configured" };
+
+    const chatIds = await resolveAlertChatIds(env);
+    if (chatIds.length === 0) {
+      return { ok: false, error: "No Telegram chat ID configured (connect Telegram first)" };
+    }
+
+    const text = formatPriceDropAlertMessage(input);
+    const failures: string[] = [];
+    let sent = 0;
+    for (const chatId of chatIds) {
+      const r = await sendToChatId(chatId, text, token);
+      if (r.ok) sent++;
+      else failures.push(`${chatId}: ${r.error ?? "unknown error"}`);
+    }
+
+    if (sent === 0) return { ok: false, error: failures.join("; ") || "send failed" };
+    if (failures.length > 0) {
+      return { ok: true, error: `partial delivery: ${failures.join("; ")}` };
+    }
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "alert failed" };
+  }
+}
