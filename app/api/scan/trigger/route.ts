@@ -48,7 +48,8 @@ export async function POST(): Promise<NextResponse> {
     checked: scan.checked,
     buys: scan.buys,
     alertsSent,
-    errors,
+    priceDropAlertsSent: scan.priceDropAlertsSent,
+    errors: [...errors, ...scan.priceDropErrors],
     results: scan.results,
   });
 }
