@@ -1,7 +1,8 @@
 "use client";
 
-import { useState, useMemo, useEffect, useCallback } from "react";
+import { useState, useMemo, useEffect, useCallback, Fragment } from "react";
 import PurchaseGuard from "@/components/PurchaseGuard";
+import HistoryPanel from "@/components/HistoryPanel";
 
 type Deal = {
   id: number;
@@ -53,6 +54,7 @@ export default function DealsPage() {
   const [maxBsr, setMaxBsr] = useState("");
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [notice, setNotice] = useState("");
+  const [expandedAsin, setExpandedAsin] = useState<string | null>(null);
 
   const fetchDeals = useCallback(async () => {
     try {
@@ -309,8 +311,8 @@ export default function DealsPage() {
             </thead>
             <tbody>
               {filtered.map((deal, i) => (
+                <Fragment key={deal.asin + deal.id}>
                 <tr
-                  key={deal.asin + deal.id}
                   className="border-b border-gray-50 transition-colors hover:bg-gray-50/60"
                   style={{ background: i % 2 === 1 ? "#FAFAFA" : "#fff" }}
                 >
@@ -325,6 +327,13 @@ export default function DealsPage() {
                   <td className="px-4 py-3.5 font-medium max-w-52 whitespace-nowrap overflow-hidden text-ellipsis" style={{ color: "#0D1B2A" }} title={deal.title}>
                     {deal.title}
                     <span className="block text-[11px] font-normal text-gray-400">{deal.asin} · {deal.category}</span>
+                    <button
+                      onClick={() => setExpandedAsin((prev) => (prev === deal.asin ? null : deal.asin))}
+                      className="block mt-0.5 text-[11px] font-semibold hover:underline"
+                      style={{ color: "#B8922A" }}
+                    >
+                      {expandedAsin === deal.asin ? "▾ Hide history" : "▸ Price history"}
+                    </button>
                   </td>
                   <td className="px-4 py-3.5 text-gray-600 whitespace-nowrap">${deal.buyPrice.toFixed(2)}</td>
                   <td className="px-4 py-3.5 text-gray-600 whitespace-nowrap">${deal.sellPrice.toFixed(2)}</td>
@@ -358,6 +367,14 @@ export default function DealsPage() {
                     </div>
                   </td>
                 </tr>
+                {expandedAsin === deal.asin && (
+                  <tr>
+                    <td colSpan={11} className="px-6 py-4 border-b border-gray-100" style={{ background: "#0A0F1E" }}>
+                      <HistoryPanel asin={deal.asin} buyPrice={deal.buyPrice} />
+                    </td>
+                  </tr>
+                )}
+                </Fragment>
               ))}
             </tbody>
           </table>
