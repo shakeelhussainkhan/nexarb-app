@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@clerk/nextjs/server";
+import { resolveUser } from "@/lib/auth/resolveUser";
 import { evaluateDeal } from "@/lib/engine/verdict";
 import {
   checkEligibility,
@@ -232,12 +233,13 @@ async function insertIntentSupabase(
   };
 }
 
-// GET /api/purchases — list purchase intents newest-first, Clerk-gated.
-// Used by the dashboard purchases UI and by the browser-assisted checkout
-// task (runs in the founder's authenticated session).
-export async function GET(): Promise<NextResponse> {
-  const { userId } = await auth();
-  if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+// GET /api/purchases — list purchase intents newest-first.
+// Auth: Clerk session OR personal API key (X-NexArb-Key). The checkout
+// processor lists intents server-side with a key; intent CREATION (POST
+// above) stays session-only so automation can never open an intent.
+export async function GET(req: NextRequest): Promise<NextResponse> {
+  const identity = await resolveUser(req);
+  if (identity.kind !== "identity") return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   if (!supabaseIsConfigured(process.env)) {
     const intents = [...sharedMemoryStore.allIntents()].sort((a, b) =>
