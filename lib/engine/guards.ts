@@ -184,6 +184,8 @@ export interface PurchaseIntentRecord {
   decidedAt: string | null; // ISO
   decidedBy: string | null;
   decisionReason: string | null;
+  retailerUrl?: string | null; // retailer product page (migration 008)
+  checkoutStatus?: string | null; // assisted-checkout lifecycle (migration 008)
 }
 
 export interface NewIntent {
@@ -193,6 +195,7 @@ export interface NewIntent {
   verdict: GuardVerdict;
   eligibility: EligibilityState;
   createdBy: string;
+  retailerUrl?: string | null;
 }
 
 // Storage contract shared by the API routes. Supabase when configured,
@@ -204,6 +207,8 @@ export interface PurchaseStore {
   transition(id: string, to: PurchaseStatus, decidedBy: string, reason: string | null): PurchaseIntentRecord | undefined;
   appendAudit(entry: AuditEntry): void;
   usageFor(asin: string, since: Date): SpendUsage;
+  allIntents(): PurchaseIntentRecord[];
+  setCheckoutStatus(id: string, to: string): PurchaseIntentRecord | undefined;
 }
 
 let intentSeq = 0;
@@ -248,6 +253,8 @@ export class InMemoryPurchaseStore implements PurchaseStore {
       decidedAt: null,
       decidedBy: null,
       decisionReason: null,
+      retailerUrl: input.retailerUrl ?? null,
+      checkoutStatus: "none",
     };
     this.intents.set(rec.id, rec);
     return { ...rec };
@@ -291,6 +298,19 @@ export class InMemoryPurchaseStore implements PurchaseStore {
       if (rec.asin === asin) unitsForAsinToday += rec.qty;
     }
     return { spentToday, unitsForAsinToday };
+  }
+
+  allIntents(): PurchaseIntentRecord[] {
+    return [...this.intents.values()].map((rec) => ({ ...rec }));
+  }
+
+  /** Assisted-checkout lifecycle update (migration 008). No guard on the
+   *  value here — callers validate via lib/engine/checkout.ts first. */
+  setCheckoutStatus(id: string, to: string): PurchaseIntentRecord | undefined {
+    const rec = this.intents.get(id);
+    if (!rec) return undefined;
+    rec.checkoutStatus = to;
+    return { ...rec };
   }
 }
 
