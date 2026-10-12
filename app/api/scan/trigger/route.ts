@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { auth } from "@clerk/nextjs/server";
+import { resolveUser } from "@/lib/auth/resolveUser";
 import { runWatchlistScan } from "@/lib/engine/scan";
 import { sendBuyAlert } from "@/lib/telegram/alerts";
 
@@ -8,9 +8,12 @@ import { sendBuyAlert } from "@/lib/telegram/alerts";
 // deal-check pipeline (live sell price + live eligibility + engine verdict +
 // guard dry-run) and persists each trace to deal_checks. The dashboard reads
 // deal_checks, so results appear immediately — no dead relay involved.
-export async function POST(): Promise<NextResponse> {
-  const { userId } = await auth();
-  if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+// Auth: Clerk session OR personal API key (X-NexArb-Key) — the verification
+// cron calls this server-side with a key, no browser session involved.
+export async function POST(req: Request): Promise<NextResponse> {
+  const identity = await resolveUser(req);
+  if (identity.kind !== "identity") return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const userId = identity.userId;
 
   let scan;
   try {

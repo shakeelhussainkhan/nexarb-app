@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { auth } from "@clerk/nextjs/server";
+import { resolveUser } from "@/lib/auth/resolveUser";
+import { keyMayCheckoutAction } from "@/lib/auth/apiKeyCore";
 import {
   buildAuditEntry,
   sharedMemoryStore,
@@ -28,13 +29,18 @@ import { getSupabaseAdmin } from "@/lib/supabase";
 // never enters card details and never completes payment. The founder
 // confirms payment manually. This endpoint only moves the queue state;
 // it never touches money. Never throws: every failure path returns JSON.
+//
+// Auth: Clerk session OR personal API key (X-NexArb-Key). Key callers are
+// restricted to action="status" (see keyMayCheckoutAction) — only a human
+// session can queue a checkout.
 export async function POST(
   req: NextRequest,
   ctx: { params: Promise<{ id: string }> }
 ): Promise<NextResponse> {
   try {
-    const { userId } = await auth();
-    if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    const identity = await resolveUser(req);
+    if (identity.kind !== "identity") return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    const userId = identity.userId;
 
     const { id } = await ctx.params;
     if (!id) return NextResponse.json({ error: "Purchase id required" }, { status: 400 });
@@ -49,6 +55,15 @@ export async function POST(
     const action = String(body.action ?? "");
     if (action !== "request" && action !== "status") {
       return NextResponse.json({ error: 'action must be "request" or "status"' }, { status: 400 });
+    }
+    // API-key callers (the checkout processor) may only REPORT status.
+    // Queueing a checkout ("request") is a deliberate human action and
+    // requires a real session.
+    if (!keyMayCheckoutAction(identity.via, action)) {
+      return NextResponse.json(
+        { error: "API keys cannot queue a checkout — queue it from the dashboard." },
+        { status: 403 }
+      );
     }
 
     const useSupabase = supabaseIsConfigured(process.env);
