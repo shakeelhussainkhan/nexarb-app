@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { auth } from "@clerk/nextjs/server";
 import { supabaseIsConfigured } from "@/lib/engine/guards";
 import { ingestCandidates } from "@/lib/sourcing/ingest";
+import { MAX_CANDIDATES_PER_INGEST } from "@/lib/sourcing/orchestrate";
 import type { BrowserCandidate } from "@/lib/sourcing/ingest";
 
 // POST /api/sourcing/discover
@@ -39,9 +40,9 @@ export async function POST(req: Request): Promise<NextResponse> {
     if (candidates.length === 0) {
       return NextResponse.json({ success: true, received: 0, matched: 0, added: 0, errors: [] });
     }
-    if (candidates.length > 100) {
+    if (candidates.length > MAX_CANDIDATES_PER_INGEST) {
       return NextResponse.json(
-        { success: false, error: "Too many candidates (max 100 per call)." },
+        { success: false, error: `Too many candidates (max ${MAX_CANDIDATES_PER_INGEST} per call).` },
         { status: 400 }
       );
     }

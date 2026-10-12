@@ -12,7 +12,13 @@
 export const SWEEP_BUY_SOURCE = "walmart-clearance";
 
 /** Max NEW watchlist rows a single sweep run may insert. */
-export const MAX_NEW_WATCHLIST_ROWS = 25;
+export const MAX_NEW_WATCHLIST_ROWS = 100;
+
+/**
+ * Max candidates accepted per /api/sourcing/discover call. Aligned with
+ * MAX_NEW_WATCHLIST_ROWS so one browser batch can fill one sweep's budget.
+ */
+export const MAX_CANDIDATES_PER_INGEST = 100;
 
 /** A successful UPC -> ASIN match paired with the discovered buy price. */
 export interface UpcMatch {
@@ -44,7 +50,7 @@ export interface BuildPayloadOptions {
  * - Dedupes by ASIN (first occurrence wins)
  * - Skips ASINs already present in `existingAsins`
  * - Skips blank ASINs
- * - Caps the payload at `maxNew` (default 25) new rows
+ * - Caps the payload at `maxNew` (default 100) new rows
  */
 export function buildWatchlistPayload(
   matches: UpcMatch[],

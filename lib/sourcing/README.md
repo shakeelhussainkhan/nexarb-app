@@ -7,11 +7,18 @@ SP-API Catalog Items, feed the `watchlist` table. The verification engine
 
 ## Current adapters
 
-| Slug      | Source             | Status |
-|-----------|--------------------|--------|
+| Slug      | Source                     | Status |
+|-----------|----------------------------|--------|
 | `walmart` | walmart.com clearance/search | Live (`lib/sourcing/walmart.ts`) |
+| `costco`  | costco.com clearance/search  | Live (`lib/sourcing/costco.ts`) |
 
-## Adding the next retailer (Target, Costco, …)
+Server-side fetches from datacenter IPs are frequently blocked by retailer
+bot protection — adapters report blocks gracefully via `errors`. The live
+discovery path is the browser session (auto-solves bot checks) posting
+candidates to `POST /api/sourcing/discover`; adapters define the candidate
+shape and parsing contract that flow relies on.
+
+## Adding the next retailer (Target, …)
 
 1. **Create `lib/sourcing/<slug>.ts`** implementing `RetailerAdapter`
    (from `./types`). Required shape:

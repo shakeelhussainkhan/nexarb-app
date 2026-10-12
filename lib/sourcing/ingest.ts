@@ -1,4 +1,5 @@
-import { matchUpcToAsin } from "./match";
+import { matchUpcToAsin, createTokenCache } from "./match";
+import { SpApiThrottle } from "./throttle";
 import { spApiConfigFromEnv } from "@/lib/engine/eligibility";
 import { getSupabaseAdmin } from "@/lib/supabase";
 import { buildWatchlistPayload } from "./orchestrate";
@@ -53,11 +54,16 @@ export async function ingestCandidates(
     byUpc.set(upc, c);
   }
 
-  // Match each UPC to an Amazon ASIN. Sequential: kinder to SP-API limits.
+  // Match each UPC to an Amazon ASIN. Sequential and paced through a
+  // shared throttle: kinder to SP-API limits, 429s back off and retry
+  // instead of failing the run. One LWA token is reused for the whole run.
+  const throttle = new SpApiThrottle();
+  const tokenCache = createTokenCache();
+  const spFetch: typeof fetch = (input, init) => throttle.fetch(input, init, fetch);
   const matches: UpcMatch[] = [];
   for (const [upc, c] of byUpc) {
     try {
-      const { match, reason } = await matchUpcToAsin(spApiCfg, upc);
+      const { match, reason } = await matchUpcToAsin(spApiCfg, upc, spFetch, { tokenCache });
       if (match) {
         matches.push({ asin: match.asin, title: match.title, buyPrice: c.price, sourceUrl: c.url });
       } else if (reason) {
