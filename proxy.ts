@@ -13,7 +13,34 @@ const isPublicRoute = createRouteMatcher([
   '/api/clerk(.*)',
 ])
 
+// Endpoints that authenticate a personal API key (X-NexArb-Key) in the route
+// handler itself — cron automation and the Chrome extension call them with
+// no browser session, so the middleware session gate must step aside and let
+// the handler validate the key (or the Clerk session) instead of 404ing the
+// request at the edge. Every handler under these paths enforces auth:
+//   /api/extension/check        — key-only authenticate()
+//   /api/sourcing/discover      — resolveUser (key or session)
+//   /api/scan/trigger           — resolveUser (key or session)
+//   /api/purchases              — GET resolveUser; POST Clerk auth() (create
+//                                 stays session-only; the key cannot create)
+//   /api/purchases/[id]/checkout — resolveUser; keys limited to status actions
+// NOT included: /api/purchases/[id]/approve (approvals stay session-gated
+// here AND in the handler) and every other API route — several rely on this
+// middleware as their only auth, so the bypass must stay path-exact. Plain
+// regexes (not createRouteMatcher) so the dynamic-segment matching does not
+// depend on Clerk's pattern-syntax version.
+const API_KEY_PATH_RES: RegExp[] = [
+  /^\/api\/extension\/check(\/.*)?$/,
+  /^\/api\/sourcing\/discover(\/.*)?$/,
+  /^\/api\/scan\/trigger(\/.*)?$/,
+  /^\/api\/purchases$/,
+  /^\/api\/purchases\/[^/]+\/checkout(\/.*)?$/,
+]
+
 export default clerkMiddleware(async (auth, request) => {
+  if (API_KEY_PATH_RES.some((re) => re.test(request.nextUrl.pathname))) {
+    return
+  }
   if (!isPublicRoute(request)) {
     await auth.protect()
   }
