@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>NexArb Deal Check</title>
+<link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+<div id="app">
+  <header>
+    <div class="logo">N</div>
+    <div class="brand">
+      <div class="brand-name">NexArb</div>
+      <div class="brand-sub">Deal Check</div>
+    </div>
+  </header>
+
+  <!-- Settings view: shown until an API key is saved -->
+  <section id="settings-view" hidden>
+    <h2>Connect to NexArb</h2>
+    <p class="muted">Paste a personal API key from your NexArb dashboard
+      (Settings → API keys). It stays on this device only.</p>
+    <label for="api-base">NexArb URL</label>
+    <input id="api-base" type="url" spellcheck="false" placeholder="https://app.nexarb.io" />
+    <label for="api-key">API key</label>
+    <input id="api-key" type="password" spellcheck="false" placeholder="nxr_…" autocomplete="off" />
+    <button id="save-settings" class="btn-gold">Save</button>
+    <p id="settings-error" class="error" hidden></p>
+  </section>
+
+  <!-- Analysis view -->
+  <section id="analysis-view" hidden>
+    <div class="product">
+      <div id="p-title" class="p-title">—</div>
+      <div id="p-asin" class="p-asin">—</div>
+    </div>
+
+    <div id="loading" class="state" hidden>Checking live Amazon data…</div>
+    <div id="error" class="state error" hidden></div>
+
+    <div id="results" hidden>
+      <div class="row">
+        <span class="label">Buy Box</span>
+        <span id="r-price" class="value">—</span>
+      </div>
+      <div class="row">
+        <span class="label">Eligibility</span>
+        <span id="r-elig" class="badge">—</span>
+      </div>
+      <div class="row">
+        <span class="label">Est. sales/mo</span>
+        <span id="r-velo" class="value">—</span>
+      </div>
+      <div id="scout-block">
+        <div class="row highlight">
+          <span class="label">Max buy price</span>
+          <span id="r-maxbuy" class="value gold">—</span>
+        </div>
+        <p id="r-scout-note" class="muted small"></p>
+      </div>
+      <div id="full-block" hidden>
+        <div class="row">
+          <span class="label">Verdict</span>
+          <span id="r-verdict" class="badge">—</span>
+        </div>
+        <div class="row">
+          <span class="label">Net profit</span>
+          <span id="r-profit" class="value">—</span>
+        </div>
+        <div class="row">
+          <span class="label">Margin</span>
+          <span id="r-margin" class="value">—</span>
+        </div>
+      </div>
+
+      <div class="buyrow">
+        <label for="buy-price">Your buy price ($)</label>
+        <div class="buyrow-input">
+          <input id="buy-price" type="number" min="0" step="0.01" inputmode="decimal" placeholder="0.00" />
+          <button id="analyze" class="btn-gold">Analyze</button>
+        </div>
+      </div>
+      <p class="muted small">Fees are estimates until real per-ASIN fee data is wired in.</p>
+    </div>
+
+    <div id="not-amazon" class="state" hidden>
+      Open an Amazon product page to check a deal.
+    </div>
+
+    <footer>
+      <button id="open-settings" class="link">Settings</button>
+      <button id="rescan" class="link">Rescan</button>
+    </footer>
+  </section>
+</div>
+<script src="popup.js"></script>
+</body>
+</html>
