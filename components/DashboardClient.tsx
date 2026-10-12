@@ -23,6 +23,9 @@ interface Deal {
   // Source-trust assessment (server-computed via lib/engine/trust.ts).
   // Optional until the /api/deals mapping is hooked up.
   trust?: { level: "verified-retailer" | "unverified"; notes: string[] };
+  // Engine verdict (server-computed). Drives Buy-button gating: only BUY
+  // verdicts render an enabled Buy button.
+  engine?: { verdict: "BUY" | "SKIP" | "UNKNOWN"; reasons: string[] };
 }
 
 interface DealsStats {
@@ -823,15 +826,30 @@ export default function DashboardClient() {
                                   <span className="text-xs font-medium text-green-600 bg-green-50 px-2.5 py-1 rounded-full">✓ Bought</span>
                                 ) : (
                                   <>
-                                    <button
-                                      onClick={() => handleAction(deal.asin, "buy")}
-                                      disabled={isActioning}
-                                      className="px-2.5 py-1.5 rounded-lg text-xs font-semibold text-white transition hover:opacity-90 disabled:opacity-50"
-                                      style={{ background: "#B8922A" }}
-                                      title="Buy this deal (b)"
-                                    >
-                                      {isActioning && actionLoading === deal.asin + "buy" ? "…" : "Buy"}
-                                    </button>
+                                    {deal.engine?.verdict === "BUY" ? (
+                                      <button
+                                        onClick={() => handleAction(deal.asin, "buy")}
+                                        disabled={isActioning}
+                                        className="px-2.5 py-1.5 rounded-lg text-xs font-semibold text-white transition hover:opacity-90 disabled:opacity-50"
+                                        style={{ background: "#B8922A" }}
+                                        title="Buy this deal (b)"
+                                      >
+                                        {isActioning && actionLoading === deal.asin + "buy" ? "…" : "Buy"}
+                                      </button>
+                                    ) : (
+                                      <span className="inline-flex flex-col items-start gap-1">
+                                        <button
+                                          disabled
+                                          title={deal.engine?.reasons[0] ?? `Verdict is ${deal.engine?.verdict ?? "UNKNOWN"}.`}
+                                          className="px-2.5 py-1.5 rounded-lg text-xs font-semibold text-gray-300 bg-gray-100 cursor-not-allowed"
+                                        >
+                                          Buy
+                                        </button>
+                                        <span className="block max-w-56 whitespace-normal text-[11px] leading-snug text-gray-400">
+                                          {deal.engine?.reasons[0] ?? `Verdict is ${deal.engine?.verdict ?? "UNKNOWN"} — buy disabled.`}
+                                        </span>
+                                      </span>
+                                    )}
                                     <button
                                       onClick={() => handleAction(deal.asin, "skip")}
                                       disabled={isActioning}
