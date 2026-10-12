@@ -8,6 +8,7 @@ import { useUser, useClerk } from "@clerk/nextjs";
 const navItems = [
   { label: "Dashboard", href: "/dashboard", icon: GridIcon },
   { label: "Deals", href: "/dashboard/deals", icon: TagIcon },
+  { label: "Purchases", href: "/dashboard/purchases", icon: CardIcon },
   { label: "Analytics", href: "/dashboard/analytics", icon: ChartIcon },
   { label: "Settings", href: "/dashboard/settings", icon: GearIcon },
   { label: "Billing", href: "/dashboard/billing", icon: CardIcon },

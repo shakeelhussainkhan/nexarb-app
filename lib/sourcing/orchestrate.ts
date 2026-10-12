@@ -19,6 +19,7 @@ export interface UpcMatch {
   asin: string;
   title: string;
   buyPrice: number;
+  sourceUrl?: string | null; // retailer product URL captured at discovery
 }
 
 /** Row shape for inserting into the `watchlist` table (migration 006). */
@@ -29,6 +30,7 @@ export interface WatchlistRow {
   buy_source: string;
   category: string | null;
   active: boolean;
+  source_url?: string | null; // migration 008 — feeds assisted checkout
 }
 
 export interface BuildPayloadOptions {
@@ -65,6 +67,7 @@ export function buildWatchlistPayload(
       buy_source: buySource,
       category: null,
       active: true,
+      source_url: m.sourceUrl ?? null,
     });
   }
   return rows;

@@ -55,7 +55,7 @@ export async function POST(): Promise<NextResponse> {
       try {
         const { match, reason } = await matchUpcToAsin(spApiCfg, upc);
         if (match) {
-          matches.push({ asin: match.asin, title: match.title, buyPrice: item.price });
+          matches.push({ asin: match.asin, title: match.title, buyPrice: item.price, sourceUrl: item.url });
         } else if (reason) {
           errors.push(`UPC ${upc}: ${reason}`);
         }

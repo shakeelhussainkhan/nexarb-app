@@ -59,7 +59,7 @@ export async function ingestCandidates(
     try {
       const { match, reason } = await matchUpcToAsin(spApiCfg, upc);
       if (match) {
-        matches.push({ asin: match.asin, title: match.title, buyPrice: c.price });
+        matches.push({ asin: match.asin, title: match.title, buyPrice: c.price, sourceUrl: c.url });
       } else if (reason) {
         errors.push(`UPC ${upc}: ${reason}`);
       }

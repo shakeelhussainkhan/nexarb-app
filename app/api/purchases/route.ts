@@ -55,6 +55,8 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   const sellPrice = Number(body.sellPrice);
   const bsr = body.bsr === undefined || body.bsr === null ? undefined : Number(body.bsr);
   const category = body.category === undefined || body.category === null ? undefined : String(body.category);
+  const retailerUrlRaw = body.retailer_url === undefined || body.retailer_url === null ? null : String(body.retailer_url).trim();
+  const retailerUrlBody = retailerUrlRaw && retailerUrlRaw.length > 0 && retailerUrlRaw.length <= 2000 ? retailerUrlRaw : null;
 
   const problems: string[] = [];
   if (!/^[A-Z0-9]{10}$/.test(asin)) problems.push("Valid 10-character asin required.");
@@ -117,11 +119,26 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   }
 
   const id = newIntentId();
+
+  // Retailer URL: prefer the body value, else copy the watchlist source_url
+  // captured at discovery time (migration 008). Used by assisted checkout.
+  let retailerUrl: string | null = retailerUrlBody;
+  if (!retailerUrl && useSupabase) {
+    try {
+      const sb = getSupabaseAdmin();
+      const { data } = await sb.from("watchlist").select("source_url").eq("asin", asin).maybeSingle();
+      const fromWatchlist = data ? String((data as Record<string, unknown>).source_url ?? "").trim() : "";
+      if (fromWatchlist) retailerUrl = fromWatchlist;
+    } catch {
+      // Non-fatal: intent creation proceeds without a retailer URL.
+    }
+  }
+
   let intent: PurchaseIntentRecord;
   try {
     intent = useSupabase
-      ? await insertIntentSupabase(id, { asin, qty, unitPrice, verdict, eligibility: eligibility.state, createdBy: userId })
-      : sharedMemoryStore.createIntent({ asin, qty, unitPrice, verdict, eligibility: eligibility.state, createdBy: userId });
+      ? await insertIntentSupabase(id, { asin, qty, unitPrice, verdict, eligibility: eligibility.state, createdBy: userId, retailerUrl })
+      : sharedMemoryStore.createIntent({ asin, qty, unitPrice, verdict, eligibility: eligibility.state, createdBy: userId, retailerUrl });
   } catch (e) {
     return NextResponse.json(
       { error: "Could not record intent", reasons: [e instanceof Error ? e.message : "unknown error"] },
@@ -177,7 +194,7 @@ async function usageFromSupabase(asin: string, since: Date): Promise<SpendUsage>
 
 async function insertIntentSupabase(
   id: string,
-  input: { asin: string; qty: number; unitPrice: number; verdict: "BUY" | "SKIP" | "UNKNOWN"; eligibility: string; createdBy: string }
+  input: { asin: string; qty: number; unitPrice: number; verdict: "BUY" | "SKIP" | "UNKNOWN"; eligibility: string; createdBy: string; retailerUrl?: string | null }
 ): Promise<PurchaseIntentRecord> {
   const sb = getSupabaseAdmin();
   const { data, error } = await sb
@@ -191,6 +208,7 @@ async function insertIntentSupabase(
       eligibility: input.eligibility,
       status: "PENDING_APPROVAL",
       created_by: input.createdBy,
+      retailer_url: input.retailerUrl ?? null,
     })
     .select()
     .single();
@@ -209,5 +227,56 @@ async function insertIntentSupabase(
     decidedAt: row.decided_at ? String(row.decided_at) : null,
     decidedBy: row.decided_by ? String(row.decided_by) : null,
     decisionReason: row.decision_reason ? String(row.decision_reason) : null,
+    retailerUrl: row.retailer_url ? String(row.retailer_url) : null,
+    checkoutStatus: row.checkout_status ? String(row.checkout_status) : "none",
   };
+}
+
+// GET /api/purchases — list purchase intents newest-first, Clerk-gated.
+// Used by the dashboard purchases UI and by the browser-assisted checkout
+// task (runs in the founder's authenticated session).
+export async function GET(): Promise<NextResponse> {
+  const { userId } = await auth();
+  if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
+  if (!supabaseIsConfigured(process.env)) {
+    const intents = [...sharedMemoryStore.allIntents()].sort((a, b) =>
+      b.createdAt.localeCompare(a.createdAt)
+    );
+    return NextResponse.json({ intents });
+  }
+
+  try {
+    const sb = getSupabaseAdmin();
+    const { data, error } = await sb
+      .from("purchases")
+      .select(
+        "id, asin, qty, unit_price, verdict, eligibility, status, created_by, created_at, decided_at, decided_by, decision_reason, retailer_url, checkout_status"
+      )
+      .order("created_at", { ascending: false })
+      .limit(200);
+    if (error) throw new Error(error.message);
+    const intents: PurchaseIntentRecord[] = ((data ?? []) as Array<Record<string, unknown>>).map((row) => ({
+      id: String(row.id),
+      asin: String(row.asin),
+      qty: Number(row.qty),
+      unitPrice: Number(row.unit_price),
+      verdict: row.verdict as PurchaseIntentRecord["verdict"],
+      eligibility: row.eligibility as PurchaseIntentRecord["eligibility"],
+      status: row.status as PurchaseIntentRecord["status"],
+      createdBy: String(row.created_by),
+      createdAt: String(row.created_at),
+      decidedAt: row.decided_at ? String(row.decided_at) : null,
+      decidedBy: row.decided_by ? String(row.decided_by) : null,
+      decisionReason: row.decision_reason ? String(row.decision_reason) : null,
+      retailerUrl: row.retailer_url ? String(row.retailer_url) : null,
+      checkoutStatus: row.checkout_status ? String(row.checkout_status) : "none",
+    }));
+    return NextResponse.json({ intents });
+  } catch (e) {
+    return NextResponse.json(
+      { error: "Could not list intents", reasons: [e instanceof Error ? e.message : "unknown error"] },
+      { status: 503 }
+    );
+  }
 }
