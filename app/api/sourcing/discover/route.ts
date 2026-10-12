@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { auth } from "@clerk/nextjs/server";
+import { resolveUser } from "@/lib/auth/resolveUser";
 import { supabaseIsConfigured } from "@/lib/engine/guards";
 import { ingestCandidates } from "@/lib/sourcing/ingest";
 import { MAX_CANDIDATES_PER_INGEST } from "@/lib/sourcing/orchestrate";
@@ -12,15 +12,16 @@ import type { BrowserCandidate } from "@/lib/sourcing/ingest";
 // an Amazon ASIN via SP-API, and inserts NEW matches into `watchlist`.
 //
 // Body: { candidates: [{ title, price, url, upc, retailer }] }
-// The browser task runs in the user's authenticated session, so this stays
-// Clerk-gated like every other endpoint.
+// Auth: Clerk session OR personal API key (X-NexArb-Key) — the discovery
+// cron calls this server-side with a key; the browser session is only used
+// for scraping retailers, never as the ingest credential.
 //
 // DISCOVERY ONLY — nothing here purchases, creates intents, or spends money.
 // The handler never throws: every failure path returns JSON.
 export async function POST(req: Request): Promise<NextResponse> {
   try {
-    const { userId } = await auth();
-    if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    const identity = await resolveUser(req);
+    if (identity.kind !== "identity") return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
     if (!supabaseIsConfigured(process.env)) {
       return NextResponse.json(
