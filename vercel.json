@@ -1,18 +1,1 @@
-{
-  "crons": [
-    {
-      "path": "/api/cron/scan",
-      // Vercel cron schedules are UTC. PT is UTC-7 during daylight time
-      // (PDT, Mar–Nov), so 15:00 / 20:00 UTC = 8:00 AM / 1:00 PM PDT.
-      // NOTE: when Pacific Standard Time returns (UTC-8, Nov–Mar) these same
-      // schedules fire at 7:00 AM / 12:00 PM / 5:00 PM local — UTC cron has no
-      // DST awareness.
-      "schedule": "0 15,20 * * *"
-    },
-    {
-      "path": "/api/cron/scan",
-      // 01:00 UTC = 6:00 PM PDT (5:00 PM once PST returns).
-      "schedule": "0 1 * * *"
-    }
-  ]
-}
+{"crons":[{"path":"/api/cron/scan","schedule":"0 15,20 * * *"},{"path":"/api/cron/scan","schedule":"0 1 * * *"}]}
