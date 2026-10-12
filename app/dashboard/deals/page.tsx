@@ -30,6 +30,14 @@ type Deal = {
     velocityConfidence: string;
     daysToClear: number | null;
     suggestedQty: number;
+    velocity: {
+      unitsPerDay: number | null;
+      confidence: "low" | "medium" | "high" | "unknown";
+      trend: "improving" | "declining" | "stable" | "insufficient";
+      snapshotCount: number;
+      spanDays: number;
+      basis: string;
+    };
   };
 };
 
@@ -39,7 +47,18 @@ const CHANNEL_COLORS: Record<string, { bg: string; text: string; dot: string }> 
   Alibaba: { bg: "#FCE4EC", text: "#C62828", dot: "#E53935" },
 };
 
-type SortKey = "title" | "buyPrice" | "sellPrice" | "floor" | "net" | "bsr" | "clear";
+type SortKey = "title" | "buyPrice" | "sellPrice" | "floor" | "net" | "bsr" | "clear" | "velocity";
+
+const TREND_STYLE: Record<string, { arrow: string; color: string }> = {
+  improving: { arrow: "↑", color: "#16A34A" },
+  declining: { arrow: "↓", color: "#DC2626" },
+  stable: { arrow: "→", color: "#9CA3AF" },
+  insufficient: { arrow: "", color: "#9CA3AF" },
+};
+
+function fmtUnitsPerDay(u: number): string {
+  return u >= 100 ? String(Math.round(u)) : String(Math.round(u * 10) / 10);
+}
 
 export default function DealsPage() {
   const [deals, setDeals] = useState<Deal[]>([]);
@@ -78,6 +97,7 @@ export default function DealsPage() {
       case "floor": return d.engine.floorPrice;
       case "net": return d.engine.netProfitAtRealistic;
       case "clear": return d.engine.daysToClear ?? Number.POSITIVE_INFINITY;
+      case "velocity": return d.engine.velocity.unitsPerDay ?? -1;
       default: return d[key] as number;
     }
   };
@@ -162,11 +182,14 @@ export default function DealsPage() {
   }
 
   function exportCsv() {
-    const rows = [["ASIN", "Product", "Category", "Buy $", "Sell $", "Floor $", "Net @ Sell $", "Margin %", "BSR", "Est Sales/mo", "Days to Clear", "Suggested Qty", "Verdict", "Channel", "Reasons"]];
+    const rows = [["ASIN", "Product", "Category", "Buy $", "Sell $", "Floor $", "Net @ Sell $", "Margin %", "BSR", "Est Sales/mo", "Est Units/day", "Velocity Confidence", "Velocity Trend", "Days to Clear", "Suggested Qty", "Verdict", "Channel", "Reasons"]];
     filtered.forEach((d) => rows.push([
       d.asin, d.title, d.category, String(d.buyPrice), String(d.sellPrice), String(d.engine.floorPrice),
       String(d.engine.netProfitAtRealistic), String(d.engine.marginAtRealistic), String(d.bsr),
-      String(d.engine.estMonthlySales), d.engine.daysToClear === null ? "" : String(d.engine.daysToClear),
+      String(d.engine.estMonthlySales),
+      d.engine.velocity.unitsPerDay === null ? "" : String(d.engine.velocity.unitsPerDay),
+      d.engine.velocity.confidence, d.engine.velocity.trend,
+      d.engine.daysToClear === null ? "" : String(d.engine.daysToClear),
       String(d.engine.suggestedQty), d.engine.verdict, d.channel, d.engine.reasons.join(" "),
     ]));
     const csv = rows.map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(",")).join("\n");
@@ -293,7 +316,7 @@ export default function DealsPage() {
                 </th>
                 {([
                   ["title", "Product"], ["buyPrice", "Buy $"], ["sellPrice", "Sell $"], ["floor", "Floor $"],
-                  ["net", "Net @ Sell"], ["bsr", "BSR"], ["clear", "Clear"],
+                  ["net", "Net @ Sell"], ["bsr", "BSR"], ["clear", "Clear"], ["velocity", "Velocity"],
                 ] as [SortKey, string][]).map(([col, label]) => (
                   <th
                     key={col}
@@ -347,6 +370,23 @@ export default function DealsPage() {
                     {deal.engine.daysToClear === null ? "—" : `~${deal.engine.daysToClear}d`}
                     <span className="block text-[11px] text-gray-400">{deal.engine.estMonthlySales}/mo est.</span>
                   </td>
+                  <td className="px-4 py-3.5 text-gray-500 whitespace-nowrap" title={deal.engine.velocity.basis}>
+                    {deal.engine.velocity.unitsPerDay === null ? (
+                      <span className="text-gray-400">n/a</span>
+                    ) : (
+                      <>
+                        <span className="font-semibold whitespace-nowrap" style={{ color: "#0D1B2A" }}>
+                          ~{fmtUnitsPerDay(deal.engine.velocity.unitsPerDay)}/day{" "}
+                          <span style={{ color: TREND_STYLE[deal.engine.velocity.trend].color }}>
+                            {TREND_STYLE[deal.engine.velocity.trend].arrow}
+                          </span>
+                        </span>
+                        <span className="block text-[11px] text-gray-400">
+                          {deal.engine.velocity.trend} · {deal.engine.velocity.confidence} conf.
+                        </span>
+                      </>
+                    )}
+                  </td>
                   <td className="px-4 py-3.5 whitespace-nowrap">
                     <VerdictBadge verdict={deal.engine.verdict} />
                     <span className="block max-w-56 whitespace-normal text-[11px] leading-snug text-gray-400 mt-1">{deal.engine.reasons[0]}</span>
@@ -369,7 +409,7 @@ export default function DealsPage() {
                 </tr>
                 {expandedAsin === deal.asin && (
                   <tr>
-                    <td colSpan={11} className="px-6 py-4 border-b border-gray-100" style={{ background: "#0A0F1E" }}>
+                    <td colSpan={12} className="px-6 py-4 border-b border-gray-100" style={{ background: "#0A0F1E" }}>
                       <HistoryPanel asin={deal.asin} buyPrice={deal.buyPrice} />
                     </td>
                   </tr>
