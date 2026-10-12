@@ -3,6 +3,8 @@ import { auth } from "@clerk/nextjs/server";
 import { getSupabaseAdmin } from "@/lib/supabase";
 import { supabaseIsConfigured } from "@/lib/engine/guards";
 import { assessTrust } from "@/lib/engine/trust";
+import { velocityReport, type VelocityReport } from "@/lib/engine/velocity";
+import type { MarketSnapshot } from "@/lib/data/types";
 
 export interface DealEngine {
   verdict: "BUY" | "SKIP" | "UNKNOWN";
@@ -16,6 +18,17 @@ export interface DealEngine {
   velocityConfidence: string;
   daysToClear: number | null;
   suggestedQty: number;
+  // First-party BSR → units/day velocity (lib/engine/velocity.ts). Populated
+  // per ASIN from the velocity_snapshots series after the deal loop; nulls
+  // here mean "insufficient data", never a fabricated figure.
+  velocity: {
+    unitsPerDay: number | null;
+    confidence: "low" | "medium" | "high" | "unknown";
+    trend: "improving" | "declining" | "stable" | "insufficient";
+    snapshotCount: number;
+    spanDays: number;
+    basis: string;
+  };
   // Multi-channel breakdown. deal_checks stores only the chosen/lead
   // channel's numbers (no channels column — migrations out of scope), so
   // this is the honest minimum reconstructed from the row: the priced
@@ -182,10 +195,74 @@ export async function GET(): Promise<NextResponse> {
         velocityConfidence: "low",
         daysToClear: null,
         suggestedQty: row.qty ?? 10,
+        velocity: {
+          unitsPerDay: null,
+          confidence: "unknown",
+          trend: "insufficient",
+          snapshotCount: 0,
+          spanDays: 0,
+          basis: "insufficient data",
+        },
         channels: [amazonChannel, walmartChannel],
         chosenChannel,
       },
     });
+  }
+
+  // First-party velocity: one batched read of the velocity_snapshots series
+  // for every ASIN on this page, then velocityReport() per ASIN. Best-effort —
+  // any failure leaves the "insufficient data" placeholders above intact and
+  // never breaks the deals list.
+  try {
+    const asins = deals.map((d) => d.asin);
+    if (asins.length > 0) {
+      const { data: snapRows } = await admin
+        .from("velocity_snapshots")
+        .select("asin, sales_rank, category, checked_at")
+        .in("asin", asins)
+        .order("checked_at", { ascending: true })
+        .limit(5000);
+      const byAsin = new Map<string, MarketSnapshot[]>();
+      for (const r of (snapRows ?? []) as Array<{
+        asin: string;
+        sales_rank: number | null;
+        category: string | null;
+        checked_at: string;
+      }>) {
+        const arr = byAsin.get(r.asin) ?? [];
+        arr.push({
+          asin: r.asin,
+          marketplace: "amazon",
+          price: null,
+          buyBoxPrice: null,
+          offerCount: null,
+          salesRank: typeof r.sales_rank === "number" ? r.sales_rank : null,
+          category: r.category,
+          capturedAt: r.checked_at,
+        });
+        byAsin.set(r.asin, arr);
+      }
+      for (const d of deals) {
+        const series = byAsin.get(d.asin) ?? [];
+        const rep: VelocityReport = velocityReport(d.asin, series);
+        d.engine.velocity = {
+          unitsPerDay: rep.unitsPerDay,
+          confidence: rep.confidence,
+          trend: rep.trend,
+          snapshotCount: rep.snapshotCount,
+          spanDays: rep.spanDays,
+          basis: rep.basis,
+        };
+        // The deals table has no BSR column of its own; the latest ranked
+        // snapshot is the honest BSR for the page (series is ascending).
+        const ranked = series.filter(
+          (s) => typeof s.salesRank === "number" && (s.salesRank as number) > 0
+        );
+        if (ranked.length > 0) d.bsr = ranked[ranked.length - 1].salesRank as number;
+      }
+    }
+  } catch {
+    // Velocity enrichment is observability — the deals list stands without it.
   }
 
   return NextResponse.json(deals);

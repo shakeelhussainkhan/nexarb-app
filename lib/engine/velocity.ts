@@ -9,6 +9,9 @@
 import type { MarketSnapshot } from "../data/types.ts";
 import type { SpApiConfig } from "./eligibility.ts";
 import type { SupabaseClient } from "@supabase/supabase-js";
+// Type-only: erased at compile, so salesModel.ts can import this module at
+// runtime (for modelMonthlySales/bsrTrend) without a runtime cycle.
+import type { RankTrend } from "./salesModel.ts";
 
 export interface VelocitySignals {
   bsr?: number; // current sales rank (snapshot)
@@ -40,7 +43,7 @@ const ANCHORS: Record<string, [number, number][]> = {
   default: [[1000, 3000], [10000, 600], [50000, 150], [100000, 80], [500000, 12]],
 };
 
-function modelMonthlySales(bsr: number, category?: string): number {
+export function modelMonthlySales(bsr: number, category?: string): number {
   const table = ANCHORS[(category ?? "").trim().toLowerCase()] ?? ANCHORS.default;
   if (bsr <= table[0][0]) {
     const [b0, u0] = table[0];
@@ -375,4 +378,82 @@ export function bsrTrend(snapshots: MarketSnapshot[], tolerance = 0.1): BsrTrend
   if (newAvg < oldAvg * (1 - tolerance)) return "positive";
   if (newAvg > oldAvg * (1 + tolerance)) return "negative";
   return "neutral";
+}
+
+// ---------------------------------------------------------------------------
+// BSR → estimated-sales-per-day report.
+//
+// velocityReport() is the single entry point the deals API uses: it turns a
+// stored velocity_snapshots series into "~X/day" with an honest confidence
+// label and a trend. The power-law curves live in ANCHORS above; the daily
+// adapter and trend labels live in lib/engine/salesModel.ts.
+// ---------------------------------------------------------------------------
+
+export interface VelocityReport {
+  asin: string;
+  unitsPerDay: number | null; // null when there is insufficient data — never a guess
+  confidence: "low" | "medium" | "high" | "unknown";
+  trend: RankTrend;
+  snapshotCount: number;
+  spanDays: number;
+  basis: string; // human-readable provenance, always set
+}
+
+/**
+ * Confidence a model estimate earns from first-party snapshot backing.
+ * Model-only (or thin) evidence stays LOW by design; a week of snapshots
+ * earns HIGH. Pure function — harness-testable.
+ */
+export function confidenceForEvidence(snapshotCount: number, spanDays: number): "low" | "medium" | "high" {
+  if (snapshotCount >= 5 && spanDays >= 7) return "high";
+  if (snapshotCount >= 2 && spanDays >= 1) return "medium";
+  return "low";
+}
+
+function bsrTrendToRankTrend(t: BsrTrend): RankTrend {
+  // Lower rank number = selling faster, so a "positive" BSR move is an
+  // "improving" sales trend.
+  if (t === "positive") return "improving";
+  if (t === "negative") return "declining";
+  if (t === "neutral") return "stable";
+  return "insufficient";
+}
+
+/**
+ * Build the "~X units/day" report for an ASIN from its snapshot series.
+ * Fewer than 2 ranked snapshots → unitsPerDay null, confidence "unknown",
+ * trend "insufficient". Never throws.
+ */
+export function velocityReport(asin: string, snapshots: MarketSnapshot[]): VelocityReport {
+  const ranked = snapshots
+    .filter((s) => typeof s.salesRank === "number" && (s.salesRank as number) > 0)
+    .sort((a, b) => a.capturedAt.localeCompare(b.capturedAt));
+  const snapshotCount = ranked.length;
+  if (snapshotCount < 2) {
+    return {
+      asin,
+      unitsPerDay: null,
+      confidence: "unknown",
+      trend: "insufficient",
+      snapshotCount,
+      spanDays: 0,
+      basis: "insufficient data: fewer than 2 sales-rank snapshots — not estimated",
+    };
+  }
+  const latest = ranked[ranked.length - 1];
+  const spanDays =
+    (Date.parse(latest.capturedAt) - Date.parse(ranked[0].capturedAt)) / 86400000;
+  const monthly = modelMonthlySales(
+    latest.salesRank as number,
+    (latest.category ?? "").trim().toLowerCase()
+  );
+  const unitsPerDay = Math.round((monthly / 30) * 10) / 10;
+  const trend = bsrTrendToRankTrend(bsrTrend(snapshots));
+  const confidence = confidenceForEvidence(snapshotCount, spanDays);
+  const basis =
+    `bsr-model estimate: rank ${(latest.salesRank as number).toLocaleString("en-US")}` +
+    (latest.category ? ` in '${latest.category}'` : "") +
+    ` → ~${Math.round(monthly).toLocaleString("en-US")}/mo ÷ 30` +
+    `; backed by ${snapshotCount} snapshots over ${Math.round(spanDays * 10) / 10}d`;
+  return { asin, unitsPerDay, confidence, trend, snapshotCount, spanDays, basis };
 }
