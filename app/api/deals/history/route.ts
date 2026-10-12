@@ -67,7 +67,7 @@ export async function GET(req: Request): Promise<NextResponse> {
         verdict: r.verdict,
       }));
 
-    return NextResponse.json({ asin, days, points, summary: summarizePriceHistory(points), ...(await buyboxPayload()) });
+    return NextResponse.json({ asin, days, points, summary: summarizePriceHistory(points), ...(await buyboxPayload(asin)) });
   } catch (e) {
     return NextResponse.json(
       { error: e instanceof Error ? e.message : "History lookup failed." },
@@ -78,7 +78,7 @@ export async function GET(req: Request): Promise<NextResponse> {
   // Separate buybox query with graceful fallback: if migration 010 hasn't run,
   // the column doesn't exist and we report "unknown" for every observation
   // rather than breaking the price-history response.
-  async function buyboxPayload(): Promise<{ buybox?: Array<{ checkedAt: string; sellPrice: number | null; winner: "us" | "competitor" | "unknown" }> }> {
+  async function buyboxPayload(forAsin: string): Promise<{ buybox?: Array<{ checkedAt: string; sellPrice: number | null; winner: "us" | "competitor" | "unknown" }> }> {
     const url = new URL(req.url);
     if (url.searchParams.get("include") !== "buybox") return {};
     const daysParam = Number(url.searchParams.get("days") ?? "90");
@@ -89,7 +89,7 @@ export async function GET(req: Request): Promise<NextResponse> {
       const { data, error } = await admin
         .from("deal_checks")
         .select("checked_at, sell_price, buybox_winner")
-        .eq("asin", asin)
+        .eq("asin", forAsin)
         .gte("checked_at", since)
         .order("checked_at", { ascending: true })
         .limit(500);
