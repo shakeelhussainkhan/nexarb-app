@@ -122,12 +122,16 @@ async function callTokenEndpoint(
   }
 }
 
-/** Exchange the OAuth authorization code from the callback for tokens. */
+/** Exchange the OAuth authorization code from the callback for tokens.
+ * The redirect_uri is repeated in the exchange — several OAuth servers
+ * (Alibaba included, per its ISV authorization doc) require it to match
+ * the one used at authorize time. */
 export async function exchangeAlibabaCode(
   cfg: AlibabaConfig,
-  code: string
+  code: string,
+  redirectUri: string
 ): Promise<{ ok: boolean; tokens?: AlibabaTokens; error?: string }> {
-  return callTokenEndpoint(cfg, "/auth/token/create", { code });
+  return callTokenEndpoint(cfg, "/auth/token/create", { code, redirect_uri: redirectUri });
 }
 
 /**
