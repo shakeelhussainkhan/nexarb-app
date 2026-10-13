@@ -28,6 +28,7 @@ check("category: bluetooth", detectCategory("Bluetooth Wireless Earbuds Pro") ==
 check("category: hoodie", detectCategory("Men's Cotton Hoodie") === "textile_apparel");
 check("category: cutting board (wood signal)", detectCategory("Bamboo Cutting Board Set") === "wood_or_furniture");
 check("category: spatula -> general", detectCategory("Silicone Spatula Set") === "general");
+check("category: 'food grade' kitchen tools stay general", detectCategory("Food Grade Silicone Spatula Set") === "general");
 check("category: childrens beats cosmetics (toy sunscreen lotion for kids?)", detectCategory("Baby Toy") === "childrens_product");
 
 // --- screening ---

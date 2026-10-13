@@ -54,7 +54,7 @@ const CATEGORY_SIGNALS: Array<{ category: ProductCategory; terms: string[] }> = 
   },
   {
     category: "food_or_supplement",
-    terms: ["supplement", "vitamin", "gummies", "protein powder", "snack", "tea leaves", "coffee beans", "spice", "edible", "food", "candy"],
+    terms: ["supplement", "vitamin", "gummies", "protein powder", "snack", "tea leaves", "coffee beans", "spice", "candy"],
   },
   {
     category: "electronics_rf",
