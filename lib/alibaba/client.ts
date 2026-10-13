@@ -11,6 +11,7 @@
 import { getSupabaseAdmin } from "@/lib/supabase";
 import {
   alibabaConfigFromEnv,
+  alibabaCandidateBases,
   signRequest,
   parseSearchResults,
   parseProductDescription,
@@ -86,40 +87,60 @@ function expiresAtFrom(expiresInSec: unknown): string | null {
   return new Date(Date.now() + n * 1000).toISOString();
 }
 
-/** POST a token endpoint (create/refresh) on the auth base. */
+/**
+ * POST a token endpoint (create/refresh), trying each candidate base in
+ * order — the token endpoint 404s on the OAuth host (observed live), so
+ * the gateway that actually serves System APIs has to be discovered. A
+ * non-404 response (success OR a JSON error) identifies the right host.
+ * Calls use the same header-signing scheme as the data APIs.
+ */
 async function callTokenEndpoint(
   cfg: AlibabaConfig,
   path: string,
   params: Record<string, string>
 ): Promise<{ ok: boolean; tokens?: AlibabaTokens; error?: string }> {
-  try {
-    const signed = { ...params, app_key: cfg.appKey, timestamp: String(Date.now()) };
-    const sign = signRequest(cfg.appSecret, path, signed);
-    const res = await fetch(`${cfg.authBase}${path}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({ ...signed, sign }).toString(),
-      signal: AbortSignal.timeout(15000),
-    });
-    const data = (await res.json().catch(() => null)) as TokenResponse | null;
-    if (!res.ok || !data?.access_token) {
+  let lastError = "no candidate gateway answered";
+  for (const base of alibabaCandidateBases(cfg)) {
+    try {
+      const timestamp = String(Date.now());
+      const signed = { ...params, app_key: cfg.appKey, timestamp };
+      const sign = signRequest(cfg.appSecret, path, signed);
+      const qs = new URLSearchParams(signed).toString();
+      const res = await fetch(`${base}${path}?${qs}`, {
+        method: "POST",
+        headers: {
+          app_key: cfg.appKey,
+          timestamp,
+          sign_method: "sha256",
+          sign,
+        },
+        signal: AbortSignal.timeout(15000),
+      });
+      if (res.status === 404) {
+        lastError = `token endpoint returned 404 on ${base}`;
+        continue;
+      }
+      const data = (await res.json().catch(() => null)) as TokenResponse | null;
+      if (!res.ok || !data?.access_token) {
+        return {
+          ok: false,
+          error: `${data?.error_description ?? data?.error ?? `token endpoint returned ${res.status}`} (via ${base})`,
+        };
+      }
       return {
-        ok: false,
-        error: data?.error_description ?? data?.error ?? `token endpoint returned ${res.status}`,
+        ok: true,
+        tokens: {
+          accessToken: data.access_token,
+          refreshToken: data.refresh_token ?? null,
+          expiresAt: expiresAtFrom(data.expires_in),
+          account: data.account ?? (data.account_id ? String(data.account_id) : null),
+        },
       };
+    } catch (e) {
+      lastError = e instanceof Error ? e.message : "token request failed";
     }
-    return {
-      ok: true,
-      tokens: {
-        accessToken: data.access_token,
-        refreshToken: data.refresh_token ?? null,
-        expiresAt: expiresAtFrom(data.expires_in),
-        account: data.account ?? (data.account_id ? String(data.account_id) : null),
-      },
-    };
-  } catch (e) {
-    return { ok: false, error: e instanceof Error ? e.message : "token request failed" };
   }
+  return { ok: false, error: lastError };
 }
 
 /** Exchange the OAuth authorization code from the callback for tokens.
@@ -174,47 +195,55 @@ export async function getValidAlibabaToken(
  * the auth material (app_key, timestamp, access_token, sign) travels as
  * HEADERS and only the business params ride in the query string. The
  * signature covers all of those parameters (business + auth, minus the
- * signature itself). */
+ * signature itself). The gateway host is unpublished, so candidate
+ * bases are tried in order until one answers with a non-404. */
 async function signedGet(
   cfg: AlibabaConfig,
   accessToken: string,
   apiPath: string,
   params: Record<string, string>
 ): Promise<{ ok: boolean; data?: unknown; error?: string }> {
-  try {
-    const timestamp = String(Date.now());
-    const signParams: Record<string, string> = {
-      ...params,
-      access_token: accessToken,
-      app_key: cfg.appKey,
-      timestamp,
-    };
-    const sign = signRequest(cfg.appSecret, apiPath, signParams);
-    const qs = new URLSearchParams(params).toString();
-    const res = await fetch(`${cfg.apiBase}${apiPath}${qs ? `?${qs}` : ""}`, {
-      headers: {
-        Accept: "application/json",
+  let lastError = "no candidate gateway answered";
+  for (const base of alibabaCandidateBases(cfg)) {
+    try {
+      const timestamp = String(Date.now());
+      const signParams: Record<string, string> = {
+        ...params,
+        access_token: accessToken,
         app_key: cfg.appKey,
         timestamp,
-        access_token: accessToken,
-        sign_method: "sha256",
-        sign,
-      },
-      signal: AbortSignal.timeout(20000),
-    });
-    const data = await res.json().catch(() => null);
-    if (!res.ok) {
-      const snippet =
-        data !== null ? JSON.stringify(data).slice(0, 200) : "";
-      return {
-        ok: false,
-        error: `Alibaba API ${apiPath} returned ${res.status}${snippet ? ` — ${snippet}` : ""}`,
       };
+      const sign = signRequest(cfg.appSecret, apiPath, signParams);
+      const qs = new URLSearchParams(params).toString();
+      const res = await fetch(`${base}${apiPath}${qs ? `?${qs}` : ""}`, {
+        headers: {
+          Accept: "application/json",
+          app_key: cfg.appKey,
+          timestamp,
+          access_token: accessToken,
+          sign_method: "sha256",
+          sign,
+        },
+        signal: AbortSignal.timeout(20000),
+      });
+      if (res.status === 404) {
+        lastError = `Alibaba API ${apiPath} returned 404 on ${base}`;
+        continue;
+      }
+      const data = await res.json().catch(() => null);
+      if (!res.ok) {
+        const snippet = data !== null ? JSON.stringify(data).slice(0, 200) : "";
+        return {
+          ok: false,
+          error: `Alibaba API ${apiPath} returned ${res.status} (via ${base})${snippet ? ` — ${snippet}` : ""}`,
+        };
+      }
+      return { ok: true, data };
+    } catch (e) {
+      lastError = e instanceof Error ? e.message : "Alibaba API call failed";
     }
-    return { ok: true, data };
-  } catch (e) {
-    return { ok: false, error: e instanceof Error ? e.message : "Alibaba API call failed" };
   }
+  return { ok: false, error: lastError };
 }
 
 /** Keyword product search (buyer API). Business params ride in `param0`. */
