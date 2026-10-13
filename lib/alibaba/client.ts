@@ -229,7 +229,7 @@ export async function searchAlibabaProducts(
   cfg: AlibabaConfig,
   accessToken: string,
   opts: { keyword: string; page?: number; size?: number; shipToCountry?: string }
-): Promise<{ ok: boolean; hits?: AlibabaSearchHit[]; shape?: ReturnType<typeof describeShape>; error?: string }> {
+): Promise<{ ok: boolean; hits?: AlibabaSearchHit[]; shape?: ReturnType<typeof describeShape>; raw?: unknown; error?: string }> {
   const param0 = JSON.stringify({
     keyword: opts.keyword,
     index: opts.page ?? 1,
@@ -240,7 +240,7 @@ export async function searchAlibabaProducts(
   });
   const res = await iopCall(cfg, "/eco/buyer/product/search", { param0 }, { accessToken, httpMethod: "GET" });
   if (!res.ok) return { ok: false, error: res.error };
-  return { ok: true, hits: parseSearchResults(res.data), shape: describeShape(res.data) };
+  return { ok: true, hits: parseSearchResults(res.data), shape: describeShape(res.data), raw: res.data };
 }
 
 /** Full product detail (MOQ, ladder prices, shipping, supplier). */

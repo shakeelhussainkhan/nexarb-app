@@ -42,7 +42,7 @@ export async function POST(req: Request): Promise<NextResponse> {
     return NextResponse.json({ success: false, error: "Supabase is not configured." }, { status: 503 });
   }
 
-  let body: { keyword?: string; asin?: string; qty?: number; size?: number; addBestToWatchlist?: boolean };
+  let body: { keyword?: string; asin?: string; qty?: number; size?: number; addBestToWatchlist?: boolean; debug?: boolean };
   try {
     body = (await req.json()) as typeof body;
   } catch {
@@ -127,5 +127,11 @@ export async function POST(req: Request): Promise<NextResponse> {
     alreadyTracked,
     notes,
     searchShape: search.shape ?? null,
+    // Opt-in (body.debug=true): a truncated excerpt of the account's own
+    // raw search response, for diagnosing Alibaba response shapes. The
+    // payload never contains credentials (responses don't echo tokens).
+    ...(body.debug
+      ? { rawSearchExcerpt: JSON.stringify(search.raw ?? null).slice(0, 2000) }
+      : {}),
   });
 }
