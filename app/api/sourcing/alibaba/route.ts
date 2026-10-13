@@ -5,6 +5,7 @@ import { getSupabaseAdmin } from "@/lib/supabase";
 import { getValidAlibabaToken, searchAlibabaProducts, getAlibabaProduct } from "@/lib/alibaba/client";
 import { bestLandedCost } from "@/lib/alibaba/core";
 import { buildWatchlistPayload } from "@/lib/sourcing/orchestrate";
+import { screenProduct, type ScreeningResult } from "@/lib/compliance/core";
 
 // POST /api/sourcing/alibaba
 //
@@ -32,6 +33,7 @@ interface Offer {
   shippingPerUnit: number;
   landedPerUnit: number;
   detailUrl: string | null;
+  screening: ScreeningResult;
 }
 
 export async function POST(req: Request): Promise<NextResponse> {
@@ -82,6 +84,17 @@ export async function POST(req: Request): Promise<NextResponse> {
       notes.push(`Product ${hit.productId}: no usable price (no ladder or cost price).`);
       continue;
     }
+    // Compliance screen (import rules): prohibited-goods terms BLOCK the
+    // offer out of the results entirely — it can never be tracked or
+    // bought through the platform. Brand-watchlist hits stay visible but
+    // carry the REVIEW verdict and its reasons.
+    const screening = screenProduct({ title: res.detail.title, supplierName: res.detail.supplierName });
+    if (screening.verdict === "blocked") {
+      notes.push(
+        `Product ${hit.productId} EXCLUDED by compliance screening: ${screening.reasons[0] ?? "prohibited goods"}`
+      );
+      continue;
+    }
     offers.push({
       productId: res.detail.productId,
       title: res.detail.title,
@@ -93,6 +106,7 @@ export async function POST(req: Request): Promise<NextResponse> {
       shippingPerUnit: landed.shippingPerUnit,
       landedPerUnit: landed.landedPerUnit,
       detailUrl: res.detail.detailUrl ?? hit.detailUrl,
+      screening,
     });
   }
   offers.sort((a, b) => a.landedPerUnit - b.landedPerUnit);
