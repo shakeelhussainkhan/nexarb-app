@@ -43,6 +43,27 @@ export function alibabaRedirectUri(env: NodeJS.ProcessEnv): string {
   return `${appUrl}/api/alibaba/callback`;
 }
 
+/**
+ * Candidate base URLs for API and token calls, in try order. Alibaba
+ * publishes the gateway host NOWHERE (docs and the API Explorer use a
+ * placeholder), and the token endpoint provably does NOT live on the
+ * OAuth host (it 404s there — observed live 2026-10-13). The client
+ * tries these in order and uses the first that answers with anything
+ * other than 404, so the integration self-discovers the real gateway.
+ */
+export function alibabaCandidateBases(cfg: AlibabaConfig): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const base of [cfg.apiBase, "https://openapi.alibaba.com", cfg.authBase]) {
+    const b = base.replace(/\/+$/, "");
+    if (b && !seen.has(b)) {
+      seen.add(b);
+      out.push(b);
+    }
+  }
+  return out;
+}
+
 /** Build the string-to-sign: API path + sorted name/value concatenation. */
 export function buildStringToSign(apiPath: string, params: Record<string, string>): string {
   const keys = Object.keys(params)
