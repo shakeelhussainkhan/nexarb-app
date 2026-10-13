@@ -1,4 +1,5 @@
-import { matchUpcToAsin, createTokenCache } from "./match";
+import { matchUpcToAsin, matchTitleToAsin, createTokenCache } from "./match";
+import { titleTokens } from "./titleMatchCore";
 import { SpApiThrottle } from "./throttle";
 import { spApiConfigFromEnv } from "@/lib/engine/eligibility";
 import { getSupabaseAdmin } from "@/lib/supabase";
@@ -23,12 +24,30 @@ export interface IngestResult {
   received: number;
   matched: number;
   added: number;
+  /** Matches resolved by the title fallback (no usable UPC). */
+  titleMatched: number;
+  /** Unmatched candidates skipped because the per-call title cap was hit. */
+  titleDeferred: number;
   errors: string[];
 }
 
 /**
+ * Max title-fallback lookups per ingest call. Each lookup is one paced
+ * SP-API call (~3s), so 15 keeps the request inside serverless time
+ * limits; the caller re-posts remaining candidates in the next batch.
+ */
+export const TITLE_MATCH_MAX_PER_INGEST = 15;
+
+/**
  * Match browser-discovered candidates to Amazon ASINs via SP-API and insert
- * NEW matches into `watchlist` (cap 25/run, dedupe by ASIN).
+ * NEW matches into `watchlist` (dedupe by ASIN, payload cap in
+ * buildWatchlistPayload).
+ *
+ * Matching order: exact UPC first; candidates with no usable UPC (retailer
+ * pages often hide it) fall back to strict title matching — brand gate,
+ * exact pack/size numeric equality, similarity floor, ambiguity margin
+ * (lib/sourcing/titleMatchCore.ts), capped per call so the request stays
+ * inside serverless time limits.
  *
  * DISCOVERY ONLY — nothing here purchases, creates intents, or spends money.
  * Never throws: failures are collected into `errors`.
@@ -42,15 +61,22 @@ export async function ingestCandidates(
 
   const spApiCfg = spApiConfigFromEnv(process.env);
 
-  // Dedupe by UPC (first occurrence wins), skip blank UPCs.
-  const byUpc = new Map<string, BrowserCandidate>();
+  // Validate prices once for every candidate; the rest are eligible for
+  // either matching path.
+  const valid: BrowserCandidate[] = [];
   for (const c of candidates) {
-    const upc = (c.upc ?? "").trim();
-    if (!upc || byUpc.has(upc)) continue;
     if (!Number.isFinite(c.price) || c.price <= 0) {
       errors.push(`"${(c.title ?? "").slice(0, 40)}": invalid price, skipped`);
       continue;
     }
+    valid.push(c);
+  }
+
+  // Dedupe by UPC (first occurrence wins) for the exact-match pass.
+  const byUpc = new Map<string, BrowserCandidate>();
+  for (const c of valid) {
+    const upc = (c.upc ?? "").trim();
+    if (!upc || byUpc.has(upc)) continue;
     byUpc.set(upc, c);
   }
 
@@ -61,11 +87,13 @@ export async function ingestCandidates(
   const tokenCache = createTokenCache();
   const spFetch: typeof fetch = (input, init) => throttle.fetch(input, init, fetch);
   const matches: UpcMatch[] = [];
+  const consumed = new Set<BrowserCandidate>();
   for (const [upc, c] of byUpc) {
     try {
       const { match, reason } = await matchUpcToAsin(spApiCfg, upc, spFetch, { tokenCache });
       if (match) {
         matches.push({ asin: match.asin, title: match.title, buyPrice: c.price, sourceUrl: c.url });
+        consumed.add(c);
       } else if (reason) {
         errors.push(`UPC ${upc}: ${reason}`);
       }
@@ -74,8 +102,41 @@ export async function ingestCandidates(
     }
   }
 
+  // Title fallback for everything the UPC pass did not consume, deduped by
+  // normalized title (the same product scraped twice costs one lookup).
+  const matchedAsins = new Set(matches.map((m) => m.asin));
+  const pool: BrowserCandidate[] = [];
+  const seenTitles = new Set<string>();
+  for (const c of valid) {
+    if (consumed.has(c)) continue;
+    const key = titleTokens(c.title ?? "").join(" ");
+    if (!key || seenTitles.has(key)) continue;
+    seenTitles.add(key);
+    pool.push(c);
+  }
+  const attempts = pool.slice(0, TITLE_MATCH_MAX_PER_INGEST);
+  const titleDeferred = pool.length - attempts.length;
+  let titleMatched = 0;
+  for (const c of attempts) {
+    try {
+      const { match } = await matchTitleToAsin(spApiCfg, c.title, spFetch, { tokenCache });
+      if (match && !matchedAsins.has(match.asin)) {
+        matches.push({ asin: match.asin, title: match.title, buyPrice: c.price, sourceUrl: c.url });
+        matchedAsins.add(match.asin);
+        titleMatched++;
+      }
+    } catch (e) {
+      errors.push(`Title "${(c.title ?? "").slice(0, 40)}": match failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+  if (titleDeferred > 0) {
+    errors.push(
+      `Title matching capped at ${TITLE_MATCH_MAX_PER_INGEST} lookups per call — ${titleDeferred} candidate(s) deferred; re-post them in the next batch.`
+    );
+  }
+
   if (matches.length === 0) {
-    return { received, matched: 0, added: 0, errors };
+    return { received, matched: 0, added: 0, titleMatched, titleDeferred, errors };
   }
 
   // Insert NEW matches only.
@@ -87,6 +148,8 @@ export async function ingestCandidates(
       received,
       matched: matches.length,
       added: 0,
+      titleMatched,
+      titleDeferred,
       errors: [...errors, `Supabase unavailable: ${e instanceof Error ? e.message : String(e)}`],
     };
   }
@@ -98,6 +161,8 @@ export async function ingestCandidates(
       received,
       matched: matches.length,
       added: 0,
+      titleMatched,
+      titleDeferred,
       errors: [...errors, `Could not read watchlist: ${error.message}`],
     };
   }
@@ -114,11 +179,13 @@ export async function ingestCandidates(
         received,
         matched: matches.length,
         added: 0,
+        titleMatched,
+        titleDeferred,
         errors: [...errors, `Could not write watchlist: ${writeError.message}`],
       };
     }
     added = rows.length;
   }
 
-  return { received, matched: matches.length, added, errors };
+  return { received, matched: matches.length, added, titleMatched, titleDeferred, errors };
 }
