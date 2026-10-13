@@ -66,6 +66,38 @@ export function signRequest(
 
 // --- Response parsing ------------------------------------------------------
 
+/**
+ * Structural summary of an Alibaba payload (key names only, never values)
+ * for diagnosing response-shape drift — Alibaba's docs don't publish real
+ * response examples, so the endpoint reports the shape it actually got.
+ */
+export function describeShape(payload: unknown): {
+  topKeys: string[];
+  resultKeys: string[];
+  firstItemKeys: string[];
+  total: number | null;
+} {
+  const root = asRecord(payload);
+  const result = asRecord(root?.result) ?? root;
+  let firstItemKeys: string[] = [];
+  if (result) {
+    for (const key of ["data", "productList", "items", "list", "products", "product_list", "result_data"]) {
+      const v = result[key];
+      if (Array.isArray(v) && v.length > 0) {
+        const item = asRecord(v[0]);
+        if (item) firstItemKeys = Object.keys(item).slice(0, 20);
+        break;
+      }
+    }
+  }
+  return {
+    topKeys: root ? Object.keys(root).slice(0, 20) : [],
+    resultKeys: result ? Object.keys(result).slice(0, 20) : [],
+    firstItemKeys,
+    total: result ? num(result.total ?? result.total_count ?? result.count) : null,
+  };
+}
+
 export interface AlibabaSearchHit {
   productId: string;
   title: string;
