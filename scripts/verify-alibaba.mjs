@@ -54,6 +54,43 @@ check("config: default gateway is the IOP /rest endpoint from Alibaba's SDK",
 
 // --- search parsing ---
 {
+  // The REAL live shape observed 2026-10-13 (values abbreviated from a
+  // production response): result.data.products with nested image and
+  // protocol-relative permalink.
+  const live = parseSearchResults({
+    result: {
+      code: "200",
+      data: {
+        pagination: { current: 1, page_count: 17, page_size: 5, total_product_count: 84 },
+        products: [
+          {
+            product_id: 10000041214899,
+            title: "Heat Resistant Silicone Spatula Set",
+            price: "$54.48",
+            image: { main_image: "https://s.alicdn.com/img1.jpg" },
+            permalink: "//www.alibaba.com/product-detail/Heat-Resistant_10000041214899.html",
+          },
+          {
+            product_id: 1600901111018,
+            title: "Food Silicone Kitchen Utensils Set",
+            price: "$1.85-1.87",
+            image: { main_image: "https://s.alicdn.com/img2.jpg" },
+            permalink: "//www.alibaba.com/product-detail/Food_1600901111018.html",
+          },
+        ],
+      },
+    },
+    code: "0",
+  });
+  check("search parse: LIVE shape (result.data.products)",
+    live.length === 2 && live[0].productId === "10000041214899" && live[0].mainImage === "https://s.alicdn.com/img1.jpg" &&
+      live[0].detailUrl === "https://www.alibaba.com/product-detail/Heat-Resistant_10000041214899.html",
+    JSON.stringify(live[0]));
+  const liveShape = describeShape({ result: { code: "200", data: { pagination: { total_product_count: 84 }, products: [{ product_id: 1 }] } } });
+  check("shape: LIVE search payload total + item keys",
+    liveShape.total === 84 && liveShape.firstItemKeys.includes("product_id"), JSON.stringify(liveShape));
+}
+{
   const hits = parseSearchResults({
     result: {
       data: [
