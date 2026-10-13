@@ -823,7 +823,7 @@ export default function DashboardClient() {
                             <td className="px-4 py-3.5 whitespace-nowrap">
                               <div className="flex items-center gap-1.5">
                                 {isBought ? (
-                                  <span className="text-xs font-medium text-green-600 bg-green-50 px-2.5 py-1 rounded-full">✓ Bought</span>
+                                  <span className="text-xs font-medium text-green-600 bg-green-50 px-2.5 py-1 rounded-full">Intent created · Pending approval</span>
                                 ) : (
                                   <>
                                     {deal.engine?.verdict === "BUY" ? (
