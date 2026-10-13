@@ -28,6 +28,10 @@ const isPublicRoute = createRouteMatcher([
 //                                 decisions on the brand-approval queue)
 //   /api/sourcing/alibaba       — resolveUser (key or session)
 //   /api/alibaba/status         — resolveUser (connection status booleans)
+//   /api/compliance/screen      — resolveUser (pure screening computation)
+//   /api/compliance/overview    — resolveUser (read-only summary)
+//   /api/compliance/shipments   — GET resolveUser; POST session-only
+//   /api/compliance/shipments/[id]/package — resolveUser (read-only)
 // NOT included: /api/purchases/[id]/approve (approvals stay session-gated
 // here AND in the handler) and every other API route — several rely on this
 // middleware as their only auth, so the bypass must stay path-exact. Plain
@@ -42,6 +46,10 @@ const API_KEY_PATH_RES: RegExp[] = [
   /^\/api\/purchases\/[^/]+\/checkout(\/.*)?$/,
   /^\/api\/approvals$/,
   /^\/api\/alibaba\/status$/,
+  /^\/api\/compliance\/screen$/,
+  /^\/api\/compliance\/overview$/,
+  /^\/api\/compliance\/shipments$/,
+  /^\/api\/compliance\/shipments\/[^/]+\/package$/,
 ]
 
 export default clerkMiddleware(async (auth, request) => {
