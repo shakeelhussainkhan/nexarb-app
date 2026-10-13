@@ -243,22 +243,26 @@ export async function searchAlibabaProducts(
   return { ok: true, hits: parseSearchResults(res.data), shape: describeShape(res.data), raw: res.data };
 }
 
-/** Full product detail (MOQ, ladder prices, shipping, supplier). */
+/** Full product detail (MOQ, ladder prices, shipping, supplier).
+ * Business params ride in a `query_req` JSON wrapper — the API rejects
+ * flat params with MissingParameter: query_req (observed live
+ * 2026-10-13). Search uses a different wrapper name (`param0`). */
 export async function getAlibabaProduct(
   cfg: AlibabaConfig,
   accessToken: string,
   productId: string
 ): Promise<{ ok: boolean; detail?: AlibabaProductDetail; raw?: unknown; error?: string }> {
+  const queryReq = JSON.stringify({
+    product_id: Number(productId),
+    country: "US",
+    language: "en",
+    currency: "USD",
+    ship_to_country: "US",
+  });
   const res = await iopCall(
     cfg,
     "/eco/buyer/product/description",
-    {
-      product_id: productId,
-      country: "US",
-      language: "en",
-      currency: "USD",
-      ship_to_country: "US",
-    },
+    { query_req: queryReq },
     { accessToken, httpMethod: "GET" }
   );
   if (!res.ok) return { ok: false, error: res.error };
