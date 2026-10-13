@@ -54,8 +54,16 @@ export default function AlibabaPage() {
 
   useEffect(() => {
     fetchStatus();
-    const flag = new URLSearchParams(window.location.search).get("alibaba");
-    if (flag && FLAG_NOTICES[flag]) setNotice(FLAG_NOTICES[flag]);
+    const params = new URLSearchParams(window.location.search);
+    const flag = params.get("alibaba");
+    if (flag && FLAG_NOTICES[flag]) {
+      const detail = params.get("detail");
+      setNotice(
+        flag === "exchange-failed" && detail
+          ? `${FLAG_NOTICES[flag]} Alibaba said: ${detail}`
+          : FLAG_NOTICES[flag]
+      );
+    }
   }, [fetchStatus]);
 
   async function runSearch(addBest: boolean) {

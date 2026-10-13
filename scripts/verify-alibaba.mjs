@@ -4,6 +4,7 @@
 import { createHmac } from "node:crypto";
 import {
   alibabaConfigFromEnv,
+  alibabaRedirectUri,
   buildStringToSign,
   signRequest,
   parseSearchResults,
@@ -30,6 +31,10 @@ check("config: key+secret -> config with defaults",
   (() => { const c = alibabaConfigFromEnv({ ALIBABA_APP_KEY: "502684", ALIBABA_APP_SECRET: "s3cr3t" }); return c?.appKey === "502684" && c.apiBase.length > 0 && c.authBase.includes("openapi-auth"); })());
 check("config: env base override wins",
   alibabaConfigFromEnv({ ALIBABA_APP_KEY: "k", ALIBABA_APP_SECRET: "s", ALIBABA_API_BASE: "https://gw.example.com/" })?.apiBase === "https://gw.example.com");
+check("redirect uri: production default",
+  alibabaRedirectUri({}) === "https://app.nexarb.io/api/alibaba/callback");
+check("redirect uri: app url override",
+  alibabaRedirectUri({ NEXT_PUBLIC_APP_URL: "https://staging.example.com/" }) === "https://staging.example.com/api/alibaba/callback");
 
 // --- signing ---
 {

@@ -36,6 +36,13 @@ export function alibabaConfigFromEnv(env: NodeJS.ProcessEnv): AlibabaConfig | nu
   };
 }
 
+/** The OAuth redirect URI registered on the app — used identically by
+ * the connect route (authorize) and the token exchange. */
+export function alibabaRedirectUri(env: NodeJS.ProcessEnv): string {
+  const appUrl = (env.NEXT_PUBLIC_APP_URL ?? "https://app.nexarb.io").replace(/\/+$/, "");
+  return `${appUrl}/api/alibaba/callback`;
+}
+
 /** Build the string-to-sign: API path + sorted name/value concatenation. */
 export function buildStringToSign(apiPath: string, params: Record<string, string>): string {
   const keys = Object.keys(params)

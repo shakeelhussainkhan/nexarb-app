@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@clerk/nextjs/server";
-import { alibabaConfigFromEnv } from "@/lib/alibaba/core";
+import { alibabaConfigFromEnv, alibabaRedirectUri } from "@/lib/alibaba/core";
 import { exchangeAlibabaCode, saveAlibabaTokens } from "@/lib/alibaba/client";
 import { getSupabaseAdmin } from "@/lib/supabase";
 
@@ -10,9 +10,16 @@ import { getSupabaseAdmin } from "@/lib/supabase";
 // against their account. Every outcome lands back on /dashboard/alibaba
 // with a status flag — this route never renders its own error page.
 
-function backToDashboard(req: NextRequest, flag: string): NextResponse {
+function backToDashboard(req: NextRequest, flag: string, detail?: string): NextResponse {
   const url = new URL("/dashboard/alibaba", req.url);
   url.searchParams.set("alibaba", flag);
+  // Surface the provider's own error text (sanitized, truncated) so a
+  // failed exchange is diagnosable from the dashboard instead of a
+  // generic flag. Never includes secrets — Alibaba error payloads carry
+  // error codes/descriptions only.
+  if (detail) {
+    url.searchParams.set("detail", detail.replace(/[\r\n]+/g, " ").slice(0, 200));
+  }
   const res = NextResponse.redirect(url);
   res.cookies.delete("alibaba_oauth_state");
   return res;
@@ -31,8 +38,10 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
   const cfg = alibabaConfigFromEnv(process.env);
   if (!cfg) return backToDashboard(req, "not-configured");
 
-  const exchanged = await exchangeAlibabaCode(cfg, code);
-  if (!exchanged.ok || !exchanged.tokens) return backToDashboard(req, "exchange-failed");
+  const exchanged = await exchangeAlibabaCode(cfg, code, alibabaRedirectUri(process.env));
+  if (!exchanged.ok || !exchanged.tokens) {
+    return backToDashboard(req, "exchange-failed", exchanged.error);
+  }
 
   const saved = await saveAlibabaTokens(getSupabaseAdmin(), userId, exchanged.tokens);
   if (!saved.ok) return backToDashboard(req, "save-failed");

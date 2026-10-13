@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { NextResponse } from "next/server";
 import { auth } from "@clerk/nextjs/server";
-import { alibabaConfigFromEnv } from "@/lib/alibaba/core";
+import { alibabaConfigFromEnv, alibabaRedirectUri } from "@/lib/alibaba/core";
 
 // GET /api/alibaba/connect — starts the buyer OAuth flow. Session-only:
 // the founder connects their own Alibaba buyer account. Sets a short-
@@ -18,8 +18,7 @@ export async function GET(): Promise<NextResponse> {
     );
   }
 
-  const appUrl = (process.env.NEXT_PUBLIC_APP_URL ?? "https://app.nexarb.io").replace(/\/+$/, "");
-  const redirectUri = `${appUrl}/api/alibaba/callback`;
+  const redirectUri = alibabaRedirectUri(process.env);
   const state = randomBytes(16).toString("hex");
   const authorizeUrl =
     `${cfg.authBase}/oauth/authorize?response_type=code` +
