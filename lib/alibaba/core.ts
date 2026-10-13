@@ -79,10 +79,20 @@ export function describeShape(payload: unknown): {
 } {
   const root = asRecord(payload);
   const result = asRecord(root?.result) ?? root;
+  const data = asRecord(result?.data);
+  const pagination = asRecord(data?.pagination);
   let firstItemKeys: string[] = [];
   if (result) {
-    for (const key of ["data", "productList", "items", "list", "products", "product_list", "result_data"]) {
-      const v = result[key];
+    const lists: unknown[] = [
+      data?.products,
+      result.products,
+      result.data,
+      result.productList,
+      result.items,
+      result.list,
+      data?.result_data,
+    ];
+    for (const v of lists) {
       if (Array.isArray(v) && v.length > 0) {
         const item = asRecord(v[0]);
         if (item) firstItemKeys = Object.keys(item).slice(0, 20);
@@ -94,7 +104,9 @@ export function describeShape(payload: unknown): {
     topKeys: root ? Object.keys(root).slice(0, 20) : [],
     resultKeys: result ? Object.keys(result).slice(0, 20) : [],
     firstItemKeys,
-    total: result ? num(result.total ?? result.total_count ?? result.count) : null,
+    total:
+      (pagination ? num(pagination.total_product_count ?? pagination.total) : null) ??
+      (result ? num(result.total ?? result.total_count ?? result.count) : null),
   };
 }
 
@@ -121,16 +133,22 @@ function num(v: unknown): number | null {
 }
 
 /**
- * Extract product hits from a /eco/buyer/product/search response. The API
- * wraps results in a `result` object whose list key has varied across
- * versions (data / productList / items) — accept any of them. Never throws.
+ * Extract product hits from a /eco/buyer/product/search response.
+ * Observed live shape (2026-10-13): { result: { code: "200", data: {
+ * pagination: {...}, products: [{ product_id, title, price,
+ * image: { main_image }, permalink }] } } }. Older/legacy variants
+ * (flat arrays under data/productList/items/list) are still accepted.
+ * Never throws.
  */
 export function parseSearchResults(payload: unknown): AlibabaSearchHit[] {
   try {
     const root = asRecord(payload);
     const result = asRecord(root?.result) ?? root;
     if (!result) return [];
+    const data = asRecord(result.data);
     const list =
+      (data && Array.isArray(data.products) && data.products) ||
+      (Array.isArray(result.products) && result.products) ||
       (Array.isArray(result.data) && result.data) ||
       (Array.isArray(result.productList) && result.productList) ||
       (Array.isArray(result.items) && result.items) ||
@@ -144,11 +162,14 @@ export function parseSearchResults(payload: unknown): AlibabaSearchHit[] {
       const productId = str(item.product_id ?? item.productId ?? item.id);
       const title = str(item.title ?? item.subject ?? item.product_name);
       if (!productId || !title) continue;
+      const image = asRecord(item.image);
+      const rawUrl = str(item.permalink ?? item.detail_url ?? item.detailUrl ?? item.url);
       hits.push({
         productId,
         title,
-        mainImage: str(item.main_image ?? item.image_url ?? item.imageUrl) || null,
-        detailUrl: str(item.detail_url ?? item.detailUrl ?? item.url) || null,
+        mainImage:
+          str(image?.main_image ?? item.main_image ?? item.image_url ?? item.imageUrl) || null,
+        detailUrl: rawUrl ? (rawUrl.startsWith("//") ? `https:${rawUrl}` : rawUrl) : null,
       });
     }
     return hits;
