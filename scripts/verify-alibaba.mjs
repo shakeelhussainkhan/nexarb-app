@@ -5,6 +5,7 @@ import { createHmac } from "node:crypto";
 import {
   alibabaConfigFromEnv,
   alibabaRedirectUri,
+  describeShape,
   buildStringToSign,
   signRequest,
   parseSearchResults,
@@ -128,6 +129,16 @@ const DETAIL_PAYLOAD = {
   const bulk = bestLandedCost(detail, 1000);
   check("landed: bulk tier lowers unit cost",
     bulk?.landedPerUnit === 1.96, JSON.stringify(bulk));
+}
+
+// --- shape diagnostics ---
+{
+  const shape = describeShape({ result: { data: [{ product_id: 1, title: "x", price: 2 }], total: 42, current: 1 } });
+  check("shape: keys + total extracted",
+    shape.total === 42 && shape.resultKeys.includes("data") && shape.firstItemKeys.includes("product_id"),
+    JSON.stringify(shape));
+  check("shape: junk -> empty summary",
+    describeShape(null).total === null && describeShape(null).topKeys.length === 0);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
