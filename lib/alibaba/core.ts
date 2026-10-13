@@ -15,10 +15,9 @@ import { createHmac } from "node:crypto";
 export interface AlibabaConfig {
   appKey: string;
   appSecret: string;
-  /** Gateway base for API calls (no trailing slash). Default is the
-   * best-known candidate host — Alibaba does not publish it in the docs
-   * or the API Explorer (both use a placeholder), so it is env-overridable
-   * via ALIBABA_API_BASE and the first live search verifies it. */
+  /** Gateway URL for ALL API calls — a single IOP gateway endpoint
+   * (https://openapi-api.alibaba.com/rest); the API name travels as the
+   * `method` parameter, per Alibaba's official IOP SDK. */
   apiBase: string;
   /** Base for OAuth authorize/token endpoints. */
   authBase: string;
@@ -31,7 +30,7 @@ export function alibabaConfigFromEnv(env: NodeJS.ProcessEnv): AlibabaConfig | nu
   return {
     appKey,
     appSecret,
-    apiBase: (env.ALIBABA_API_BASE ?? "https://api.alibaba.com").replace(/\/+$/, ""),
+    apiBase: (env.ALIBABA_API_BASE ?? "https://openapi-api.alibaba.com/rest").replace(/\/+$/, ""),
     authBase: (env.ALIBABA_AUTH_BASE ?? "https://openapi-auth.alibaba.com").replace(/\/+$/, ""),
   };
 }
@@ -41,27 +40,6 @@ export function alibabaConfigFromEnv(env: NodeJS.ProcessEnv): AlibabaConfig | nu
 export function alibabaRedirectUri(env: NodeJS.ProcessEnv): string {
   const appUrl = (env.NEXT_PUBLIC_APP_URL ?? "https://app.nexarb.io").replace(/\/+$/, "");
   return `${appUrl}/api/alibaba/callback`;
-}
-
-/**
- * Candidate base URLs for API and token calls, in try order. Alibaba
- * publishes the gateway host NOWHERE (docs and the API Explorer use a
- * placeholder), and the token endpoint provably does NOT live on the
- * OAuth host (it 404s there — observed live 2026-10-13). The client
- * tries these in order and uses the first that answers with anything
- * other than 404, so the integration self-discovers the real gateway.
- */
-export function alibabaCandidateBases(cfg: AlibabaConfig): string[] {
-  const seen = new Set<string>();
-  const out: string[] = [];
-  for (const base of [cfg.apiBase, "https://openapi.alibaba.com", cfg.authBase]) {
-    const b = base.replace(/\/+$/, "");
-    if (b && !seen.has(b)) {
-      seen.add(b);
-      out.push(b);
-    }
-  }
-  return out;
 }
 
 /** Build the string-to-sign: API path + sorted name/value concatenation. */
