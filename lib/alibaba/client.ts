@@ -248,7 +248,7 @@ export async function getAlibabaProduct(
   cfg: AlibabaConfig,
   accessToken: string,
   productId: string
-): Promise<{ ok: boolean; detail?: AlibabaProductDetail; error?: string }> {
+): Promise<{ ok: boolean; detail?: AlibabaProductDetail; raw?: unknown; error?: string }> {
   const res = await iopCall(
     cfg,
     "/eco/buyer/product/description",
@@ -263,6 +263,8 @@ export async function getAlibabaProduct(
   );
   if (!res.ok) return { ok: false, error: res.error };
   const detail = parseProductDescription(res.data);
-  if (!detail) return { ok: false, error: "Alibaba returned a product description we could not parse." };
-  return { ok: true, detail };
+  if (!detail) {
+    return { ok: false, error: "Alibaba returned a product description we could not parse.", raw: res.data };
+  }
+  return { ok: true, detail, raw: res.data };
 }

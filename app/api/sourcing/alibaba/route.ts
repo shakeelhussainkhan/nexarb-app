@@ -69,8 +69,10 @@ export async function POST(req: Request): Promise<NextResponse> {
 
   const notes: string[] = [];
   const offers: Offer[] = [];
+  let firstDetailRaw: unknown = null;
   for (const hit of search.hits.slice(0, size)) {
     const res = await getAlibabaProduct(authRes.cfg, authRes.token, hit.productId);
+    if (firstDetailRaw === null && res.raw !== undefined) firstDetailRaw = res.raw;
     if (!res.ok || !res.detail) {
       notes.push(`Product ${hit.productId}: ${res.error ?? "detail lookup failed"}`);
       continue;
@@ -131,7 +133,10 @@ export async function POST(req: Request): Promise<NextResponse> {
     // raw search response, for diagnosing Alibaba response shapes. The
     // payload never contains credentials (responses don't echo tokens).
     ...(body.debug
-      ? { rawSearchExcerpt: JSON.stringify(search.raw ?? null).slice(0, 2000) }
+      ? {
+          rawSearchExcerpt: JSON.stringify(search.raw ?? null).slice(0, 2000),
+          rawDescriptionExcerpt: JSON.stringify(firstDetailRaw ?? null).slice(0, 2000),
+        }
       : {}),
   });
 }
