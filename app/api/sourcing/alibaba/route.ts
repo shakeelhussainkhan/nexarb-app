@@ -126,5 +126,6 @@ export async function POST(req: Request): Promise<NextResponse> {
     added,
     alreadyTracked,
     notes,
+    searchShape: search.shape ?? null,
   });
 }
