@@ -11,7 +11,8 @@ import { getSupabaseAdmin } from "@/lib/supabase";
 import { supabaseIsConfigured } from "@/lib/engine/guards";
 import { suggestListPrice, recordPriceMonitor } from "@/lib/engine/repricing";
 import { evaluatePriceAlert, type LastPriceAlert } from "@/lib/engine/priceAlerts";
-import { sendPriceDropAlert } from "@/lib/telegram/alerts";
+import { evaluateApprovalCandidate, decideQueueAction } from "@/lib/engine/approvalQueueCore";
+import { sendPriceDropAlert, sendApprovalAlert } from "@/lib/telegram/alerts";
 
 export interface ScanResultItem {
   asin: string;
@@ -31,6 +32,10 @@ export interface WatchlistScanResult {
   priceDropAlertsSent: number;
   /** Non-fatal price-drop plumbing errors (never fail the scan). */
   priceDropErrors: string[];
+  /** Approval-queue alerts actually delivered during this scan. */
+  approvalAlertsSent: number;
+  /** Non-fatal approval-queue plumbing errors (never fail the scan). */
+  approvalErrors: string[];
 }
 
 const DEFAULT_LIMIT = 25;
@@ -129,6 +134,110 @@ async function maybeSendPriceDropAlert(
   }
 }
 
+/** Approval queue: when a check is gated (APPROVAL_REQUIRED) but clears the
+ * profit bar, queue it for a brand-approval application and alert the
+ * founder once, with Amazon's application link. Best-effort end to end:
+ * returns { alerted, error } and never throws. A missing migration 013
+ * degrades to a collected error — the scan itself is unaffected. */
+async function maybeQueueApproval(
+  admin: SupabaseAdmin,
+  trace: DealCheckTrace,
+  opts: { title: string | null }
+): Promise<{ alerted: boolean; error?: string }> {
+  try {
+    const { candidate } = evaluateApprovalCandidate({
+      asin: trace.asin,
+      eligibilityState: trace.eligibility.state,
+      approvalLinks: trace.eligibility.approvalLinks,
+      channels: trace.verdict.channels,
+      buyPrice: trace.inputs.buyPrice.value,
+      sellPrice: trace.inputs.sellPrice.value,
+    });
+    if (!candidate) return { alerted: false };
+
+    const { data: existingData, error: readError } = await admin
+      .from("approval_queue")
+      .select("status, alerted_at")
+      .eq("asin", trace.asin)
+      .maybeSingle();
+    if (readError) {
+      return { alerted: false, error: `approval queue read failed for ${trace.asin}: ${readError.message}` };
+    }
+    const existing = existingData
+      ? {
+          status: (existingData as { status: string }).status as "pending" | "applied" | "dismissed",
+          alertedAt: (existingData as { alerted_at: string | null }).alerted_at,
+        }
+      : null;
+
+    const action = decideQueueAction(existing);
+    const nowIso = new Date().toISOString();
+    if (action.write === "insert") {
+      const { error: insertError } = await admin.from("approval_queue").insert({
+        asin: candidate.asin,
+        title: opts.title,
+        approval_url: candidate.approvalUrl,
+        channel: candidate.channel,
+        net_per_unit: candidate.netPerUnit,
+        margin_pct: candidate.marginPct,
+        buy_price: candidate.buyPrice,
+        sell_price: candidate.sellPrice,
+        status: "pending",
+        last_seen_at: nowIso,
+      });
+      if (insertError) {
+        return { alerted: false, error: `approval queue insert failed for ${trace.asin}: ${insertError.message}` };
+      }
+    } else if (action.write === "refresh") {
+      const { error: updateError } = await admin
+        .from("approval_queue")
+        .update({
+          title: opts.title,
+          approval_url: candidate.approvalUrl,
+          channel: candidate.channel,
+          net_per_unit: candidate.netPerUnit,
+          margin_pct: candidate.marginPct,
+          buy_price: candidate.buyPrice,
+          sell_price: candidate.sellPrice,
+          last_seen_at: nowIso,
+        })
+        .eq("asin", trace.asin)
+        .eq("status", "pending");
+      if (updateError) {
+        return { alerted: false, error: `approval queue refresh failed for ${trace.asin}: ${updateError.message}` };
+      }
+    }
+
+    if (!action.shouldAlert) return { alerted: false };
+
+    const sendRes = await sendApprovalAlert({
+      asin: candidate.asin,
+      title: opts.title,
+      channel: candidate.channel,
+      netPerUnit: candidate.netPerUnit,
+      marginPct: candidate.marginPct,
+      buyPrice: candidate.buyPrice,
+      sellPrice: candidate.sellPrice,
+      approvalUrl: candidate.approvalUrl,
+    });
+    if (!sendRes.ok) {
+      // Row stays un-alerted; a later scan retries the alert.
+      return { alerted: false, error: `approval alert failed for ${trace.asin}: ${sendRes.error ?? "unknown error"}` };
+    }
+    try {
+      await admin.from("approval_queue").update({ alerted_at: nowIso }).eq("asin", trace.asin);
+    } catch {
+      // Swallowed deliberately — worst case the alert repeats once.
+    }
+    return { alerted: true };
+  } catch (err) {
+    return {
+      alerted: false,
+      error: `approval queue check failed for ${trace.asin}: ${err instanceof Error ? err.message : "unknown"}`,
+    };
+  }
+}
+
 export async function runWatchlistScan(
   opts: { limit?: number; userId?: string } = {}
 ): Promise<WatchlistScanResult> {
@@ -162,6 +271,8 @@ export async function runWatchlistScan(
   const buyTraces: DealCheckTrace[] = [];
   const priceDropErrors: string[] = [];
   let priceDropAlertsSent = 0;
+  const approvalErrors: string[] = [];
+  let approvalAlertsSent = 0;
 
   for (const item of list) {
     try {
@@ -210,6 +321,17 @@ export async function runWatchlistScan(
           `price-drop check failed for ${trace.asin}: ${err instanceof Error ? err.message : "unknown"}`
         );
       }
+
+      // Approval queue (own guarded block — same isolation as price-drop).
+      try {
+        const approval = await maybeQueueApproval(admin, trace, { title: item.title });
+        if (approval.alerted) approvalAlertsSent++;
+        if (approval.error) approvalErrors.push(approval.error);
+      } catch (err) {
+        approvalErrors.push(
+          `approval queue check failed for ${trace.asin}: ${err instanceof Error ? err.message : "unknown"}`
+        );
+      }
     } catch {
       results.push({
         asin: item.asin,
@@ -222,5 +344,5 @@ export async function runWatchlistScan(
   }
 
   const buys = results.filter((r) => r.verdict === "BUY").length;
-  return { checked: results.length, buys, results, buyTraces, priceDropAlertsSent, priceDropErrors };
+  return { checked: results.length, buys, results, buyTraces, priceDropAlertsSent, priceDropErrors, approvalAlertsSent, approvalErrors };
 }

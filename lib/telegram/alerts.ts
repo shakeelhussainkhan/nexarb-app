@@ -204,3 +204,66 @@ export async function sendPriceDropAlert(
     return { ok: false, error: err instanceof Error ? err.message : "alert failed" };
   }
 }
+
+// --- Approval queue alerts -------------------------------------------------
+
+export interface ApprovalAlertInput {
+  asin: string;
+  title: string | null;
+  channel: string;
+  netPerUnit: number;
+  marginPct: number;
+  buyPrice: number;
+  sellPrice: number | null;
+  approvalUrl: string;
+}
+
+/** Builds the HTML approval-queue alert body. Pure — safe to test offline. */
+export function formatApprovalAlertMessage(input: ApprovalAlertInput): string {
+  const headline = (input.title ?? "").trim() || input.asin;
+  const sellLine =
+    input.sellPrice !== null
+      ? `Buy ${money(input.buyPrice)} → sell ${money(input.sellPrice)} on ${escapeHtml(input.channel)}\n`
+      : `Buy ${money(input.buyPrice)} on ${escapeHtml(input.channel)}\n`;
+  return (
+    `🔓 PROFITABLE BUT GATED — ${escapeHtml(headline)}\n` +
+    `Amazon requires brand approval to list this, and the numbers clear your bar:\n` +
+    sellLine +
+    `Net ${money(input.netPerUnit)}/unit at ${input.marginPct.toFixed(1)}% margin\n` +
+    `ASIN: ${escapeHtml(input.asin)}\n` +
+    `Apply for approval: ${escapeHtml(input.approvalUrl)}`
+  );
+}
+
+/** Send an approval-queue alert. Never throws. */
+export async function sendApprovalAlert(
+  input: ApprovalAlertInput,
+  env: NodeJS.ProcessEnv = process.env
+): Promise<AlertResult> {
+  try {
+    const token = (env.TELEGRAM_BOT_TOKEN ?? "").trim();
+    if (!token) return { ok: false, error: "TELEGRAM_BOT_TOKEN not configured" };
+
+    const chatIds = await resolveAlertChatIds(env);
+    if (chatIds.length === 0) {
+      return { ok: false, error: "No Telegram chat ID configured (connect Telegram first)" };
+    }
+
+    const text = formatApprovalAlertMessage(input);
+    const failures: string[] = [];
+    let sent = 0;
+    for (const chatId of chatIds) {
+      const r = await sendToChatId(chatId, text, token);
+      if (r.ok) sent++;
+      else failures.push(`${chatId}: ${r.error ?? "unknown error"}`);
+    }
+
+    if (sent === 0) return { ok: false, error: failures.join("; ") || "send failed" };
+    if (failures.length > 0) {
+      return { ok: true, error: `partial delivery: ${failures.join("; ")}` };
+    }
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "alert failed" };
+  }
+}

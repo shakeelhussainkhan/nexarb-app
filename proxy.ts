@@ -24,6 +24,8 @@ const isPublicRoute = createRouteMatcher([
 //   /api/purchases              — GET resolveUser; POST Clerk auth() (create
 //                                 stays session-only; the key cannot create)
 //   /api/purchases/[id]/checkout — resolveUser; keys limited to status actions
+//   /api/approvals              — GET resolveUser; POST session-only (founder
+//                                 decisions on the brand-approval queue)
 // NOT included: /api/purchases/[id]/approve (approvals stay session-gated
 // here AND in the handler) and every other API route — several rely on this
 // middleware as their only auth, so the bypass must stay path-exact. Plain
@@ -35,6 +37,7 @@ const API_KEY_PATH_RES: RegExp[] = [
   /^\/api\/scan\/trigger(\/.*)?$/,
   /^\/api\/purchases$/,
   /^\/api\/purchases\/[^/]+\/checkout(\/.*)?$/,
+  /^\/api\/approvals$/,
 ]
 
 export default clerkMiddleware(async (auth, request) => {
