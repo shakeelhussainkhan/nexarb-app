@@ -52,7 +52,8 @@ export async function POST(req: Request): Promise<NextResponse> {
     buys: scan.buys,
     alertsSent,
     priceDropAlertsSent: scan.priceDropAlertsSent,
-    errors: [...errors, ...scan.priceDropErrors],
+    approvalAlertsSent: scan.approvalAlertsSent,
+    errors: [...errors, ...scan.priceDropErrors, ...scan.approvalErrors],
     results: scan.results,
   });
 }

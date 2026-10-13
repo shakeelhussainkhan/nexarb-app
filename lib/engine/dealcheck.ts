@@ -47,7 +47,7 @@ export interface DealCheckTrace {
     /** Who holds the Amazon Buy Box lane: "us" (our own offer), "competitor", or "unknown". */
     buyboxWinner: "us" | "competitor" | "unknown";
   };
-  eligibility: { state: string; reasons: string[]; source: string; checkedAt: string };
+  eligibility: { state: string; reasons: string[]; source: string; checkedAt: string; approvalLinks: string[] };
   verdict: {
     state: "BUY" | "SKIP" | "UNKNOWN";
     reasons: string[];
@@ -227,6 +227,7 @@ export async function runDealCheck(
       reasons: eligibility.reasons,
       source: eligibility.source,
       checkedAt: eligibility.checkedAt,
+      approvalLinks: eligibility.approvalLinks ?? [],
     },
     verdict: {
       state: evaluation.verdict,
