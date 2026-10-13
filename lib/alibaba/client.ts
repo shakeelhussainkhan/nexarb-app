@@ -11,7 +11,6 @@
 import { getSupabaseAdmin } from "@/lib/supabase";
 import {
   alibabaConfigFromEnv,
-  alibabaCandidateBases,
   signRequest,
   parseSearchResults,
   parseProductDescription,
@@ -87,72 +86,105 @@ function expiresAtFrom(expiresInSec: unknown): string | null {
   return new Date(Date.now() + n * 1000).toISOString();
 }
 
+interface IopErrorBody {
+  type?: string;
+  code?: string;
+  message?: string;
+}
+
 /**
- * POST a token endpoint (create/refresh), trying each candidate base in
- * order — the token endpoint 404s on the OAuth host (observed live), so
- * the gateway that actually serves System APIs has to be discovered. A
- * non-404 response (success OR a JSON error) identifies the right host.
- * Calls use the same header-signing scheme as the data APIs.
+ * One IOP gateway call, exactly as Alibaba's official SDK performs it:
+ * a single gateway URL for every API; the API name travels as the
+ * `method` parameter; system parameters (app_key, sign_method, timestamp,
+ * partner_id, simplify, format, access_token) are merged with the
+ * business parameters; the signature is HMAC-SHA256 over
+ * method + sorted key/value concatenation of ALL parameters; GET calls
+ * put parameters in the query string, POST calls form-encode them.
+ * A top-level `code` other than "0" in the response is a gateway error.
  */
+async function iopCall(
+  cfg: AlibabaConfig,
+  method: string,
+  businessParams: Record<string, string>,
+  opts: { accessToken?: string; httpMethod: "GET" | "POST" }
+): Promise<{ ok: boolean; data?: unknown; error?: string }> {
+  const params: Record<string, string> = {
+    app_key: cfg.appKey,
+    sign_method: "sha256",
+    timestamp: String(Date.now()),
+    partner_id: "nexarb-1.0",
+    method,
+    simplify: "true",
+    format: "json",
+    ...(opts.accessToken ? { access_token: opts.accessToken } : {}),
+    ...businessParams,
+  };
+  const sign = signRequest(cfg.appSecret, method, params);
+  const all = { ...params, sign };
+  try {
+    let res: Response;
+    if (opts.httpMethod === "GET") {
+      const qs = new URLSearchParams(all).toString();
+      res = await fetch(`${cfg.apiBase}?${qs}`, {
+        headers: { Accept: "application/json" },
+        signal: AbortSignal.timeout(20000),
+      });
+    } else {
+      res = await fetch(cfg.apiBase, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" },
+        body: new URLSearchParams(all).toString(),
+        signal: AbortSignal.timeout(20000),
+      });
+    }
+    const data = (await res.json().catch(() => null)) as (Record<string, unknown> & IopErrorBody) | null;
+    if (data && typeof data.code === "string" && data.code !== "0") {
+      return { ok: false, error: `Alibaba ${method} failed [${data.type ?? "?"}/${data.code}]: ${data.message ?? "unknown error"}` };
+    }
+    if (!res.ok) {
+      return { ok: false, error: `Alibaba ${method} returned HTTP ${res.status}` };
+    }
+    if (data === null) {
+      return { ok: false, error: `Alibaba ${method} returned an unreadable response` };
+    }
+    return { ok: true, data };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : "Alibaba API call failed" };
+  }
+}
+
+/** Token create/refresh via the IOP gateway (POST, no access token). */
 async function callTokenEndpoint(
   cfg: AlibabaConfig,
   path: string,
   params: Record<string, string>
 ): Promise<{ ok: boolean; tokens?: AlibabaTokens; error?: string }> {
-  let lastError = "no candidate gateway answered";
-  for (const base of alibabaCandidateBases(cfg)) {
-    try {
-      const timestamp = String(Date.now());
-      const signed = { ...params, app_key: cfg.appKey, timestamp };
-      const sign = signRequest(cfg.appSecret, path, signed);
-      const qs = new URLSearchParams(signed).toString();
-      const res = await fetch(`${base}${path}?${qs}`, {
-        method: "POST",
-        headers: {
-          app_key: cfg.appKey,
-          timestamp,
-          sign_method: "sha256",
-          sign,
-        },
-        signal: AbortSignal.timeout(15000),
-      });
-      if (res.status === 404) {
-        lastError = `token endpoint returned 404 on ${base}`;
-        continue;
-      }
-      const data = (await res.json().catch(() => null)) as TokenResponse | null;
-      if (!res.ok || !data?.access_token) {
-        return {
-          ok: false,
-          error: `${data?.error_description ?? data?.error ?? `token endpoint returned ${res.status}`} (via ${base})`,
-        };
-      }
-      return {
-        ok: true,
-        tokens: {
-          accessToken: data.access_token,
-          refreshToken: data.refresh_token ?? null,
-          expiresAt: expiresAtFrom(data.expires_in),
-          account: data.account ?? (data.account_id ? String(data.account_id) : null),
-        },
-      };
-    } catch (e) {
-      lastError = e instanceof Error ? e.message : "token request failed";
-    }
+  const res = await iopCall(cfg, path, params, { httpMethod: "POST" });
+  if (!res.ok) return { ok: false, error: res.error };
+  const data = res.data as TokenResponse;
+  if (!data?.access_token) {
+    return { ok: false, error: "Alibaba's token response did not include an access_token." };
   }
-  return { ok: false, error: lastError };
+  return {
+    ok: true,
+    tokens: {
+      accessToken: data.access_token,
+      refreshToken: data.refresh_token ?? null,
+      expiresAt: expiresAtFrom(data.expires_in),
+      account: data.account ?? (data.account_id ? String(data.account_id) : null),
+    },
+  };
 }
 
 /** Exchange the OAuth authorization code from the callback for tokens.
- * The redirect_uri is repeated in the exchange — several OAuth servers
- * (Alibaba included, per its ISV authorization doc) require it to match
- * the one used at authorize time. */
+ * Alibaba's token-create API documents exactly one business parameter —
+ * `code` — so the exchange sends exactly that (the SDK's own token
+ * sample does the same). */
 export async function exchangeAlibabaCode(
   cfg: AlibabaConfig,
-  code: string,
-  redirectUri: string
+  code: string
 ): Promise<{ ok: boolean; tokens?: AlibabaTokens; error?: string }> {
-  return callTokenEndpoint(cfg, "/auth/token/create", { code, redirect_uri: redirectUri });
+  return callTokenEndpoint(cfg, "/auth/token/create", { code });
 }
 
 /**
@@ -191,61 +223,6 @@ export async function getValidAlibabaToken(
   return { ok: true, token: merged.accessToken, cfg };
 }
 
-/** Signed GET against the API gateway. Per the console's own SDK sample,
- * the auth material (app_key, timestamp, access_token, sign) travels as
- * HEADERS and only the business params ride in the query string. The
- * signature covers all of those parameters (business + auth, minus the
- * signature itself). The gateway host is unpublished, so candidate
- * bases are tried in order until one answers with a non-404. */
-async function signedGet(
-  cfg: AlibabaConfig,
-  accessToken: string,
-  apiPath: string,
-  params: Record<string, string>
-): Promise<{ ok: boolean; data?: unknown; error?: string }> {
-  let lastError = "no candidate gateway answered";
-  for (const base of alibabaCandidateBases(cfg)) {
-    try {
-      const timestamp = String(Date.now());
-      const signParams: Record<string, string> = {
-        ...params,
-        access_token: accessToken,
-        app_key: cfg.appKey,
-        timestamp,
-      };
-      const sign = signRequest(cfg.appSecret, apiPath, signParams);
-      const qs = new URLSearchParams(params).toString();
-      const res = await fetch(`${base}${apiPath}${qs ? `?${qs}` : ""}`, {
-        headers: {
-          Accept: "application/json",
-          app_key: cfg.appKey,
-          timestamp,
-          access_token: accessToken,
-          sign_method: "sha256",
-          sign,
-        },
-        signal: AbortSignal.timeout(20000),
-      });
-      if (res.status === 404) {
-        lastError = `Alibaba API ${apiPath} returned 404 on ${base}`;
-        continue;
-      }
-      const data = await res.json().catch(() => null);
-      if (!res.ok) {
-        const snippet = data !== null ? JSON.stringify(data).slice(0, 200) : "";
-        return {
-          ok: false,
-          error: `Alibaba API ${apiPath} returned ${res.status} (via ${base})${snippet ? ` — ${snippet}` : ""}`,
-        };
-      }
-      return { ok: true, data };
-    } catch (e) {
-      lastError = e instanceof Error ? e.message : "Alibaba API call failed";
-    }
-  }
-  return { ok: false, error: lastError };
-}
-
 /** Keyword product search (buyer API). Business params ride in `param0`. */
 export async function searchAlibabaProducts(
   cfg: AlibabaConfig,
@@ -260,7 +237,7 @@ export async function searchAlibabaProducts(
     currency: "USD",
     language: "en",
   });
-  const res = await signedGet(cfg, accessToken, "/eco/buyer/product/search", { param0 });
+  const res = await iopCall(cfg, "/eco/buyer/product/search", { param0 }, { accessToken, httpMethod: "GET" });
   if (!res.ok) return { ok: false, error: res.error };
   return { ok: true, hits: parseSearchResults(res.data) };
 }
@@ -271,13 +248,18 @@ export async function getAlibabaProduct(
   accessToken: string,
   productId: string
 ): Promise<{ ok: boolean; detail?: AlibabaProductDetail; error?: string }> {
-  const res = await signedGet(cfg, accessToken, "/eco/buyer/product/description", {
-    product_id: productId,
-    country: "US",
-    language: "en",
-    currency: "USD",
-    ship_to_country: "US",
-  });
+  const res = await iopCall(
+    cfg,
+    "/eco/buyer/product/description",
+    {
+      product_id: productId,
+      country: "US",
+      language: "en",
+      currency: "USD",
+      ship_to_country: "US",
+    },
+    { accessToken, httpMethod: "GET" }
+  );
   if (!res.ok) return { ok: false, error: res.error };
   const detail = parseProductDescription(res.data);
   if (!detail) return { ok: false, error: "Alibaba returned a product description we could not parse." };

@@ -4,7 +4,6 @@
 import { createHmac } from "node:crypto";
 import {
   alibabaConfigFromEnv,
-  alibabaCandidateBases,
   alibabaRedirectUri,
   buildStringToSign,
   signRequest,
@@ -36,12 +35,8 @@ check("redirect uri: production default",
   alibabaRedirectUri({}) === "https://app.nexarb.io/api/alibaba/callback");
 check("redirect uri: app url override",
   alibabaRedirectUri({ NEXT_PUBLIC_APP_URL: "https://staging.example.com/" }) === "https://staging.example.com/api/alibaba/callback");
-check("candidate bases: configured base first, then openapi, then auth — deduped",
-  JSON.stringify(alibabaCandidateBases({ appKey: "k", appSecret: "s", apiBase: "https://api.alibaba.com", authBase: "https://openapi-auth.alibaba.com" })) ===
-  JSON.stringify(["https://api.alibaba.com", "https://openapi.alibaba.com", "https://openapi-auth.alibaba.com"]));
-check("candidate bases: override host dedupes against the openapi candidate",
-  JSON.stringify(alibabaCandidateBases({ appKey: "k", appSecret: "s", apiBase: "https://openapi.alibaba.com/", authBase: "https://openapi-auth.alibaba.com" })) ===
-  JSON.stringify(["https://openapi.alibaba.com", "https://openapi-auth.alibaba.com"]));
+check("config: default gateway is the IOP /rest endpoint from Alibaba's SDK",
+  alibabaConfigFromEnv({ ALIBABA_APP_KEY: "k", ALIBABA_APP_SECRET: "s" })?.apiBase === "https://openapi-api.alibaba.com/rest");
 
 // --- signing ---
 {
