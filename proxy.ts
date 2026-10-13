@@ -34,6 +34,7 @@ const isPublicRoute = createRouteMatcher([
 const API_KEY_PATH_RES: RegExp[] = [
   /^\/api\/extension\/check(\/.*)?$/,
   /^\/api\/sourcing\/discover(\/.*)?$/,
+  /^\/api\/sourcing\/alibaba$/,
   /^\/api\/scan\/trigger(\/.*)?$/,
   /^\/api\/purchases$/,
   /^\/api\/purchases\/[^/]+\/checkout(\/.*)?$/,
