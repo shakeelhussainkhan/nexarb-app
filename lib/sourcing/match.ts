@@ -19,6 +19,11 @@ import {
   getCachedAccessToken,
   type TokenCache,
 } from "./throttle";
+import {
+  buildKeywordQuery,
+  pickTitleMatch,
+  type CatalogTitleItem,
+} from "./titleMatchCore";
 
 type FetchFn = typeof fetch;
 
@@ -165,6 +170,108 @@ export async function matchUpcToAsin(
     return {
       match: null,
       reason: `Catalog Items lookup failed (${e instanceof Error ? e.message : "unknown error"}) — no ASIN matched.`,
+    };
+  }
+}
+
+interface CatalogTitleRaw {
+  asin?: string;
+  summaries?: Array<{ itemName?: string; brand?: string; manufacturer?: string }>;
+}
+
+/**
+ * Pure extraction: pull {asin, title, brand} triples out of a Catalog
+ * Items v2022-04-01 keyword-search response. Never throws.
+ */
+export function parseCatalogTitleItems(payload: unknown): CatalogTitleItem[] {
+  try {
+    const items = (payload as { items?: unknown } | null)?.items;
+    if (!Array.isArray(items)) return [];
+    const out: CatalogTitleItem[] = [];
+    for (const raw of items) {
+      const item = raw as CatalogTitleRaw | null;
+      const asin = typeof item?.asin === "string" ? item.asin.trim() : "";
+      const s = item?.summaries?.[0];
+      const title = typeof s?.itemName === "string" ? s.itemName : "";
+      if (!asin || !title) continue;
+      const brand =
+        (typeof s?.brand === "string" && s.brand.trim()) ||
+        (typeof s?.manufacturer === "string" && s.manufacturer.trim()) ||
+        null;
+      out.push({ asin, title, brand });
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Resolve a retailer product TITLE to an Amazon ASIN via a Catalog Items
+ * keyword search, scored by the strict title-match core (brand gate,
+ * exact pack/size numeric equality, similarity floor, ambiguity margin).
+ * Used as the fallback for discovery candidates whose pages expose no
+ * UPC. Never throws: every failure mode resolves to { match: null }.
+ */
+export async function matchTitleToAsin(
+  cfg: import("@/lib/engine/eligibility").SpApiConfig | null,
+  title: string,
+  fetchFn: FetchFn = fetch,
+  opts?: MatchOptions
+): Promise<MatchOutcome> {
+  if (!cfg) {
+    return { match: null, reason: "SP-API not configured" };
+  }
+  const keywords = buildKeywordQuery(title ?? "");
+  if (!keywords) {
+    return { match: null, reason: "Title match skipped: empty title." };
+  }
+  try {
+    const token = await getAccessToken(cfg, fetchFn, opts?.tokenCache);
+    const endpoint = cfg.endpoint ?? "https://sellingpartnerapi-na.amazon.com";
+    const url =
+      `${endpoint}/catalog/2022-04-01/items` +
+      `?marketplaceIds=${encodeURIComponent(cfg.marketplaceId)}` +
+      `&keywords=${encodeURIComponent(keywords)}` +
+      `&includedData=summaries&pageSize=10`;
+    const res = await fetchFn(url, {
+      headers: {
+        "x-amz-access-token": token,
+        Accept: "application/json",
+      },
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      return {
+        match: null,
+        reason:
+          `Catalog Items title search returned ${res.status}` +
+          (body ? ` — ${body.slice(0, 200)}` : "") +
+          " — no ASIN matched.",
+      };
+    }
+    const data = await res.json();
+    const items = parseCatalogTitleItems(data);
+    if (items.length === 0) {
+      return { match: null, reason: "Title search found no catalog items." };
+    }
+    const decision = pickTitleMatch(title, items);
+    if (!decision.match) {
+      return { match: null, reason: decision.reason };
+    }
+    return {
+      match: {
+        asin: decision.match.asin,
+        title: decision.match.title,
+        reason: decision.match.reason,
+      },
+      reason: decision.match.reason,
+    };
+  } catch (e) {
+    return {
+      match: null,
+      reason: `Catalog Items title search failed (${e instanceof Error ? e.message : "unknown error"}) — no ASIN matched.`,
     };
   }
 }
