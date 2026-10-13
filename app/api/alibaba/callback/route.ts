@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@clerk/nextjs/server";
-import { alibabaConfigFromEnv, alibabaRedirectUri } from "@/lib/alibaba/core";
+import { alibabaConfigFromEnv } from "@/lib/alibaba/core";
 import { exchangeAlibabaCode, saveAlibabaTokens } from "@/lib/alibaba/client";
 import { getSupabaseAdmin } from "@/lib/supabase";
 
@@ -38,7 +38,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
   const cfg = alibabaConfigFromEnv(process.env);
   if (!cfg) return backToDashboard(req, "not-configured");
 
-  const exchanged = await exchangeAlibabaCode(cfg, code, alibabaRedirectUri(process.env));
+  const exchanged = await exchangeAlibabaCode(cfg, code);
   if (!exchanged.ok || !exchanged.tokens) {
     return backToDashboard(req, "exchange-failed", exchanged.error);
   }
