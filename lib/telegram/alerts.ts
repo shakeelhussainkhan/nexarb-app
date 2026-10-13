@@ -205,6 +205,39 @@ export async function sendPriceDropAlert(
   }
 }
 
+/** Send one import-compliance alert (ISF deadline, document expiry, bond).
+ * The text is pre-formatted by lib/compliance/alerts.ts. Never throws. */
+export async function sendComplianceAlert(
+  text: string,
+  env: NodeJS.ProcessEnv = process.env
+): Promise<AlertResult> {
+  try {
+    const token = (env.TELEGRAM_BOT_TOKEN ?? "").trim();
+    if (!token) return { ok: false, error: "TELEGRAM_BOT_TOKEN not configured" };
+
+    const chatIds = await resolveAlertChatIds(env);
+    if (chatIds.length === 0) {
+      return { ok: false, error: "No Telegram chat ID configured (connect Telegram first)" };
+    }
+
+    const failures: string[] = [];
+    let sent = 0;
+    for (const chatId of chatIds) {
+      const r = await sendToChatId(chatId, text, token);
+      if (r.ok) sent++;
+      else failures.push(`${chatId}: ${r.error ?? "unknown error"}`);
+    }
+
+    if (sent === 0) return { ok: false, error: failures.join("; ") || "send failed" };
+    if (failures.length > 0) {
+      return { ok: true, error: `partial delivery: ${failures.join("; ")}` };
+    }
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "alert failed" };
+  }
+}
+
 // --- Approval queue alerts -------------------------------------------------
 
 export interface ApprovalAlertInput {
