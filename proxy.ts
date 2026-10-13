@@ -32,6 +32,8 @@ const isPublicRoute = createRouteMatcher([
 //   /api/compliance/overview    — resolveUser (read-only summary)
 //   /api/compliance/shipments   — GET resolveUser; POST session-only
 //   /api/compliance/shipments/[id]/package — resolveUser (read-only)
+//   /api/compliance/alerts/run  — resolveUser (daily monitor evaluates and
+//                                 sends Telegram compliance alerts)
 // NOT included: /api/purchases/[id]/approve (approvals stay session-gated
 // here AND in the handler) and every other API route — several rely on this
 // middleware as their only auth, so the bypass must stay path-exact. Plain
@@ -50,6 +52,7 @@ const API_KEY_PATH_RES: RegExp[] = [
   /^\/api\/compliance\/overview$/,
   /^\/api\/compliance\/shipments$/,
   /^\/api\/compliance\/shipments\/[^/]+\/package$/,
+  /^\/api\/compliance\/alerts\/run$/,
 ]
 
 export default clerkMiddleware(async (auth, request) => {
