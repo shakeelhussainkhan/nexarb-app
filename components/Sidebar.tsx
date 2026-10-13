@@ -10,6 +10,7 @@ const navItems = [
   { label: "Deals", href: "/dashboard/deals", icon: TagIcon },
   { label: "Purchases", href: "/dashboard/purchases", icon: CardIcon },
   { label: "Approvals", href: "/dashboard/approvals", icon: TagIcon },
+  { label: "Alibaba", href: "/dashboard/alibaba", icon: TagIcon },
   { label: "Listings", href: "/dashboard/listings", icon: TagIcon },
   { label: "Analytics", href: "/dashboard/analytics", icon: ChartIcon },
   { label: "Settings", href: "/dashboard/settings", icon: GearIcon },
