@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "verify:compliance": "node --experimental-strip-types --loader ./scripts/alias-loader.mjs scripts/verify-compliance.mjs"
   },
   "dependencies": {
     "@clerk/nextjs": "^7.7.0",
