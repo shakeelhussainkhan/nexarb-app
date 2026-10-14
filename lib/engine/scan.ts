@@ -12,6 +12,10 @@ import { supabaseIsConfigured } from "@/lib/engine/guards";
 import { suggestListPrice, recordPriceMonitor } from "@/lib/engine/repricing";
 import { evaluatePriceAlert, type LastPriceAlert } from "@/lib/engine/priceAlerts";
 import { evaluateApprovalCandidate, decideQueueAction } from "@/lib/engine/approvalQueueCore";
+import {
+  fetchWatchlistProductInfo,
+  backfillWatchlistProductInfo,
+} from "@/lib/engine/productBackfill";
 import { sendPriceDropAlert, sendApprovalAlert } from "@/lib/telegram/alerts";
 
 export interface ScanResultItem {
@@ -306,6 +310,20 @@ export async function runWatchlistScan(
         wouldCreateIntent: trace.guards.wouldCreateIntent,
       });
       if (trace.verdict.state === "BUY") buyTraces.push(trace);
+
+      // Product display info backfill (migration 017, own guarded
+      // block): a row whose product_title is still NULL gets ONE
+      // catalog fetch, persisted for every later read. Once set it is
+      // never refetched, so this costs at most one SP-API call per
+      // ASIN ever. Display plumbing can never corrupt scan results.
+      try {
+        const info = await fetchWatchlistProductInfo(admin, item.asin);
+        if (info && info.title === null) {
+          await backfillWatchlistProductInfo(admin, item.asin);
+        }
+      } catch {
+        // Swallowed deliberately — observability only.
+      }
 
       // Price-drop alerts (own guarded block — alert plumbing can never
       // corrupt the scan results or double-record an item).

@@ -29,11 +29,14 @@ export interface CatalogTitleItem {
   asin: string;
   title: string;
   brand?: string | null;
+  imageUrl?: string | null;
 }
 
 export interface TitleMatchPick {
   asin: string;
   title: string;
+  brand: string | null;
+  imageUrl: string | null;
   score: number;
   reason: string;
 }
@@ -187,6 +190,8 @@ export function pickTitleMatch(
     match: {
       asin: best.item.asin.trim(),
       title: best.item.title,
+      brand: best.item.brand ?? null,
+      imageUrl: best.item.imageUrl ?? null,
       score: best.score,
       reason: `Title matched ASIN ${best.item.asin.trim()} (similarity ${best.score.toFixed(2)}, brand + pack/size verified).`,
     },

@@ -10,6 +10,10 @@ interface Deal {
   id: number;
   asin: string;
   title: string;
+  // Catalog display facts (migration 017) from /api/deals; optional
+  // until every row has backfilled.
+  brand?: string | null;
+  imageUrl?: string | null;
   buyPrice: number;
   sellPrice: number;
   profit: number;
@@ -775,18 +779,30 @@ export default function DashboardClient() {
                             }}
                           >
                             <td className="px-4 py-3.5 text-xs text-gray-400 font-medium">{i + 1}</td>
-                            <td className="px-4 py-3.5 max-w-48">
-                              <a
-                                href={`https://www.amazon.com/dp/${deal.asin}`}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="font-medium leading-snug hover:underline block truncate"
-                                style={{ color: "#0D1B2A" }}
-                                title={deal.title}
-                              >
-                                {deal.title}
-                              </a>
-                              <p className="text-[11px] text-gray-400 mt-0.5">{deal.asin}</p>
+                            <td className="px-4 py-3.5 max-w-56">
+                              <div className="flex items-start gap-2.5">
+                                {deal.imageUrl && (
+                                  <img
+                                    src={deal.imageUrl}
+                                    alt=""
+                                    loading="lazy"
+                                    className="w-10 h-10 shrink-0 rounded-lg border border-gray-100 object-contain bg-white"
+                                  />
+                                )}
+                                <div className="min-w-0">
+                                  <a
+                                    href={`https://www.amazon.com/dp/${deal.asin}`}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="font-medium leading-snug hover:underline block truncate"
+                                    style={{ color: "#0D1B2A" }}
+                                    title={deal.title}
+                                  >
+                                    {deal.title}
+                                  </a>
+                                  <p className="text-[11px] text-gray-400 mt-0.5">{deal.brand ? `${deal.brand} · ` : ""}{deal.asin}</p>
+                                </div>
+                              </div>
                             </td>
                             <td className="px-4 py-3.5 text-gray-600 whitespace-nowrap">${deal.buyPrice.toFixed(2)}</td>
                             <td className="px-4 py-3.5 text-gray-600 whitespace-nowrap">${deal.sellPrice.toFixed(2)}</td>

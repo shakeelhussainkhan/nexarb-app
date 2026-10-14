@@ -92,7 +92,7 @@ export async function ingestCandidates(
     try {
       const { match, reason } = await matchUpcToAsin(spApiCfg, upc, spFetch, { tokenCache });
       if (match) {
-        matches.push({ asin: match.asin, title: match.title, buyPrice: c.price, sourceUrl: c.url });
+        matches.push({ asin: match.asin, title: match.title, brand: match.brand, imageUrl: match.imageUrl, buyPrice: c.price, sourceUrl: c.url });
         consumed.add(c);
       } else if (reason) {
         errors.push(`UPC ${upc}: ${reason}`);
@@ -121,7 +121,7 @@ export async function ingestCandidates(
     try {
       const { match } = await matchTitleToAsin(spApiCfg, c.title, spFetch, { tokenCache });
       if (match && !matchedAsins.has(match.asin)) {
-        matches.push({ asin: match.asin, title: match.title, buyPrice: c.price, sourceUrl: c.url });
+        matches.push({ asin: match.asin, title: match.title, brand: match.brand, imageUrl: match.imageUrl, buyPrice: c.price, sourceUrl: c.url });
         matchedAsins.add(match.asin);
         titleMatched++;
       }
