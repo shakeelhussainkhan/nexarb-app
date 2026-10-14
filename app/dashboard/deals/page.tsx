@@ -8,6 +8,8 @@ type Deal = {
   id: number;
   asin: string;
   title: string;
+  brand: string | null;
+  imageUrl: string | null;
   buyPrice: number;
   sellPrice: number;
   profit: number;
@@ -347,16 +349,32 @@ export default function DealsPage() {
                       className="rounded accent-[#0D1B2A]"
                     />
                   </td>
-                  <td className="px-4 py-3.5 font-medium max-w-52 whitespace-nowrap overflow-hidden text-ellipsis" style={{ color: "#0D1B2A" }} title={deal.title}>
-                    {deal.title}
-                    <span className="block text-[11px] font-normal text-gray-400">{deal.asin} · {deal.category}</span>
-                    <button
-                      onClick={() => setExpandedAsin((prev) => (prev === deal.asin ? null : deal.asin))}
-                      className="block mt-0.5 text-[11px] font-semibold hover:underline"
-                      style={{ color: "#B8922A" }}
-                    >
-                      {expandedAsin === deal.asin ? "▾ Hide history" : "▸ Price history"}
-                    </button>
+                  <td className="px-4 py-3.5 max-w-64" style={{ color: "#0D1B2A" }}>
+                    <div className="flex items-start gap-2.5">
+                      {deal.imageUrl && (
+                        <img
+                          src={deal.imageUrl}
+                          alt=""
+                          loading="lazy"
+                          className="w-10 h-10 shrink-0 rounded-lg border border-gray-100 object-contain bg-white"
+                        />
+                      )}
+                      <div className="min-w-0">
+                        <span className="block font-medium leading-snug truncate" title={deal.title}>
+                          {deal.title}
+                        </span>
+                        <span className="block text-[11px] font-normal text-gray-400">
+                          {deal.brand ? `${deal.brand} · ` : ""}{deal.asin} · {deal.category}
+                        </span>
+                        <button
+                          onClick={() => setExpandedAsin((prev) => (prev === deal.asin ? null : deal.asin))}
+                          className="block mt-0.5 text-[11px] font-semibold hover:underline"
+                          style={{ color: "#B8922A" }}
+                        >
+                          {expandedAsin === deal.asin ? "▾ Hide history" : "▸ Price history"}
+                        </button>
+                      </div>
+                    </div>
                   </td>
                   <td className="px-4 py-3.5 text-gray-600 whitespace-nowrap">${deal.buyPrice.toFixed(2)}</td>
                   <td className="px-4 py-3.5 text-gray-600 whitespace-nowrap">${deal.sellPrice.toFixed(2)}</td>
