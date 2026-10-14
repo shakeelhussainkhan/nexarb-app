@@ -24,12 +24,16 @@ import {
   pickTitleMatch,
   type CatalogTitleItem,
 } from "./titleMatchCore";
+import { mapCatalogItem } from "./catalogProductCore";
 
 type FetchFn = typeof fetch;
 
 export interface AsinMatch {
   asin: string;
   title: string;
+  /** Catalog display facts (migration 017) — persisted to the watchlist. */
+  brand: string | null;
+  imageUrl: string | null;
   reason: string;
 }
 
@@ -79,8 +83,9 @@ interface CatalogItem {
 
 /**
  * Pure extraction: pull the first item with an ASIN out of a Catalog Items
- * v2022-04-01 searchByIdentifiers response body. Returns null when no item
- * carries an ASIN. Never throws.
+ * v2022-04-01 searchByIdentifiers response body, together with its
+ * catalog display facts (title/brand/image via catalogProductCore).
+ * Returns null when no item carries an ASIN. Never throws.
  */
 export function pickBestAsin(payload: unknown): AsinMatch | null {
   try {
@@ -90,13 +95,12 @@ export function pickBestAsin(payload: unknown): AsinMatch | null {
       const item = raw as CatalogItem | null;
       const asin = typeof item?.asin === "string" ? item.asin.trim() : "";
       if (!asin) continue;
-      const title =
-        typeof item?.summaries?.[0]?.itemName === "string"
-          ? item.summaries[0].itemName
-          : "";
+      const info = mapCatalogItem(raw);
       return {
         asin,
-        title,
+        title: info?.title ?? "",
+        brand: info?.brand ?? null,
+        imageUrl: info?.imageUrl ?? null,
         reason: `UPC matched ASIN ${asin} via SP-API Catalog Items.`,
       };
     }
@@ -142,7 +146,8 @@ export async function matchUpcToAsin(
     const url =
       `${endpoint}/catalog/2022-04-01/items` +
       `?marketplaceIds=${encodeURIComponent(cfg.marketplaceId)}` +
-      `&identifiersType=UPC&identifiers=${encodeURIComponent(normalized)}`;
+      `&identifiersType=UPC&identifiers=${encodeURIComponent(normalized)}` +
+      `&includedData=summaries,images`;
     const res = await fetchFn(url, {
       headers: {
         "x-amz-access-token": token,
@@ -177,11 +182,12 @@ export async function matchUpcToAsin(
 interface CatalogTitleRaw {
   asin?: string;
   summaries?: Array<{ itemName?: string; brand?: string; manufacturer?: string }>;
+  images?: unknown;
 }
 
 /**
- * Pure extraction: pull {asin, title, brand} triples out of a Catalog
- * Items v2022-04-01 keyword-search response. Never throws.
+ * Pure extraction: pull {asin, title, brand, imageUrl} rows out of a
+ * Catalog Items v2022-04-01 keyword-search response. Never throws.
  */
 export function parseCatalogTitleItems(payload: unknown): CatalogTitleItem[] {
   try {
@@ -191,14 +197,15 @@ export function parseCatalogTitleItems(payload: unknown): CatalogTitleItem[] {
     for (const raw of items) {
       const item = raw as CatalogTitleRaw | null;
       const asin = typeof item?.asin === "string" ? item.asin.trim() : "";
-      const s = item?.summaries?.[0];
-      const title = typeof s?.itemName === "string" ? s.itemName : "";
+      const info = mapCatalogItem(raw);
+      const title = info?.title ?? "";
       if (!asin || !title) continue;
-      const brand =
-        (typeof s?.brand === "string" && s.brand.trim()) ||
-        (typeof s?.manufacturer === "string" && s.manufacturer.trim()) ||
-        null;
-      out.push({ asin, title, brand });
+      out.push({
+        asin,
+        title,
+        brand: info?.brand ?? null,
+        imageUrl: info?.imageUrl ?? null,
+      });
     }
     return out;
   } catch {
@@ -233,7 +240,7 @@ export async function matchTitleToAsin(
       `${endpoint}/catalog/2022-04-01/items` +
       `?marketplaceIds=${encodeURIComponent(cfg.marketplaceId)}` +
       `&keywords=${encodeURIComponent(keywords)}` +
-      `&includedData=summaries&pageSize=10`;
+      `&includedData=summaries,images&pageSize=10`;
     const res = await fetchFn(url, {
       headers: {
         "x-amz-access-token": token,
@@ -264,6 +271,8 @@ export async function matchTitleToAsin(
       match: {
         asin: decision.match.asin,
         title: decision.match.title,
+        brand: decision.match.brand,
+        imageUrl: decision.match.imageUrl,
         reason: decision.match.reason,
       },
       reason: decision.match.reason,
@@ -272,6 +281,75 @@ export async function matchTitleToAsin(
     return {
       match: null,
       reason: `Catalog Items title search failed (${e instanceof Error ? e.message : "unknown error"}) — no ASIN matched.`,
+    };
+  }
+}
+
+export interface CatalogProductOutcome {
+  product: {
+    asin: string;
+    title: string | null;
+    brand: string | null;
+    imageUrl: string | null;
+  } | null;
+  reason: string;
+}
+
+/**
+ * Fetch ONE catalog record by ASIN (Catalog Items getItem) for its
+ * display facts — the lazy-backfill lookup for watchlist rows whose
+ * product_title is still NULL (lib/engine/productBackfill.ts). Never
+ * throws: every failure mode resolves to { product: null, reason }.
+ */
+export async function getCatalogProductByAsin(
+  cfg: import("@/lib/engine/eligibility").SpApiConfig | null,
+  asin: string,
+  fetchFn: FetchFn = fetch,
+  opts?: MatchOptions
+): Promise<CatalogProductOutcome> {
+  if (!cfg) {
+    return { product: null, reason: "SP-API not configured" };
+  }
+  const normalized = typeof asin === "string" ? asin.trim().toUpperCase() : "";
+  if (!/^[A-Z0-9]{10}$/.test(normalized)) {
+    return { product: null, reason: "invalid ASIN format" };
+  }
+  try {
+    const token = await getAccessToken(cfg, fetchFn, opts?.tokenCache);
+    const endpoint = cfg.endpoint ?? "https://sellingpartnerapi-na.amazon.com";
+    const url =
+      `${endpoint}/catalog/2022-04-01/items/${encodeURIComponent(normalized)}` +
+      `?marketplaceIds=${encodeURIComponent(cfg.marketplaceId)}` +
+      `&includedData=summaries,images`;
+    const res = await fetchFn(url, {
+      headers: {
+        "x-amz-access-token": token,
+        Accept: "application/json",
+      },
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      return {
+        product: null,
+        reason:
+          `Catalog Items getItem returned ${res.status}` +
+          (body ? ` — ${body.slice(0, 200)}` : ""),
+      };
+    }
+    const data = await res.json();
+    const info = mapCatalogItem(data);
+    if (!info) {
+      return { product: null, reason: "Catalog item carried no display data." };
+    }
+    return {
+      product: { asin: normalized, title: info.title, brand: info.brand, imageUrl: info.imageUrl },
+      reason: `Catalog display data fetched for ASIN ${normalized}.`,
+    };
+  } catch (e) {
+    return {
+      product: null,
+      reason: `Catalog Items getItem failed (${e instanceof Error ? e.message : "unknown error"})`,
     };
   }
 }
