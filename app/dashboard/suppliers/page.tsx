@@ -44,12 +44,13 @@ export default function SuppliersPage() {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
   const [q, setQ] = useState("");
+  const [supplier, setSupplier] = useState("petra");
   const [matchedOnly, setMatchedOnly] = useState(false);
   const [minMargin, setMinMargin] = useState("");
 
   const fetchRows = useCallback(async () => {
     try {
-      const params = new URLSearchParams({ supplier: "petra", limit: "300" });
+      const params = new URLSearchParams({ supplier, limit: "300" });
       if (matchedOnly) params.set("matched", "1");
       if (q.trim()) params.set("q", q.trim());
       const mm = Number(minMargin);
@@ -65,7 +66,7 @@ export default function SuppliersPage() {
     } finally {
       setLoading(false);
     }
-  }, [q, matchedOnly, minMargin]);
+  }, [q, supplier, matchedOnly, minMargin]);
 
   useEffect(() => {
     fetchRows();
@@ -79,9 +80,12 @@ export default function SuppliersPage() {
         </h1>
         <p className="text-sm text-gray-500 mt-1">
           Distributor catalog offers matched to Amazon ASINs. Petra&apos;s product list is ingested
-          from its portal download; matches resolve by UPC through SP-API, and priced rows carry an{" "}
-          <em>estimated</em> net and margin — live Amazon price minus Petra cost, $1.50/unit 3PL prep,
-          and estimated referral/FBA fees. Estimates are directional, never exact per-ASIN fees.
+          from its portal download; Frontier Co-op&apos;s comes from its published monthly catalog
+          files. Matches resolve by UPC through SP-API, and priced rows carry an{" "}
+          <em>estimated</em> net and margin — live Amazon price minus supplier cost, $1.50/unit 3PL
+          prep, and estimated referral/FBA fees. Estimates are directional, never exact per-ASIN
+          fees. Frontier files carry no stock counts, so Frontier stock shows as — (unknown, not
+          zero on hand).
         </p>
       </div>
 
@@ -105,6 +109,17 @@ export default function SuppliersPage() {
       )}
 
       <div className="flex flex-wrap items-end gap-3 mb-5">
+        <label className="flex flex-col gap-1">
+          <span className="text-xs uppercase tracking-wide text-gray-400">Supplier</span>
+          <select
+            value={supplier}
+            onChange={(e) => setSupplier(e.target.value)}
+            className="text-sm px-3 py-2 rounded-lg border border-gray-300 bg-white"
+          >
+            <option value="petra">Petra</option>
+            <option value="frontier">Frontier Co-op</option>
+          </select>
+        </label>
         <label className="flex flex-col gap-1">
           <span className="text-xs uppercase tracking-wide text-gray-400">Search</span>
           <input
@@ -150,8 +165,9 @@ export default function SuppliersPage() {
         </p>
       ) : rows.length === 0 ? (
         <p className="text-sm text-gray-500">
-          No offers match these filters. Ingest starts with the Petra product-list download —
-          see <code>scripts/petra-ingest.mjs</code>.
+          No offers match these filters. Ingest starts with a catalog feed — see{" "}
+          <code>scripts/petra-ingest.mjs</code> (Petra portal download) or{" "}
+          <code>scripts/frontier-ingest.mjs</code> (Frontier monthly XLSX files).
         </p>
       ) : (
         <div className="overflow-x-auto">
@@ -159,7 +175,7 @@ export default function SuppliersPage() {
             <thead>
               <tr className="text-xs uppercase tracking-wide text-gray-400">
                 <th className="pb-2 pr-4">Product</th>
-                <th className="pb-2 pr-4">Petra SKU</th>
+                <th className="pb-2 pr-4">SKU</th>
                 <th className="pb-2 pr-4">UPC</th>
                 <th className="pb-2 pr-4">ASIN</th>
                 <th className="pb-2 pr-4">Cost</th>
@@ -217,7 +233,9 @@ export default function SuppliersPage() {
                       )}
                     </td>
                     <td className="py-3 pr-4 text-sm">{money(r.costPrice)}</td>
-                    <td className="py-3 pr-4 text-sm">{r.qtyAvailable}</td>
+                    <td className="py-3 pr-4 text-sm">
+                      {r.supplier === "frontier" ? "—" : r.qtyAvailable}
+                    </td>
                     <td className="py-3 pr-4 text-sm">{money(r.amazonPrice)}</td>
                     <td
                       className="py-3 pr-4 text-sm font-medium"
@@ -242,7 +260,7 @@ export default function SuppliersPage() {
             </tbody>
           </table>
           <p className="text-xs text-gray-400 mt-3">
-            * Estimates only — Amazon live landed price minus Petra cost, $1.50/unit prep, $0.45
+            * Estimates only — Amazon live landed price minus supplier cost, $1.50/unit prep, $0.45
             inbound, $0.35 storage, and estimated referral/FBA fees (lib/engine/pricing.ts fee stack).
           </p>
         </div>
