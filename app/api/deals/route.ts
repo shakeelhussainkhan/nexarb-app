@@ -4,6 +4,10 @@ import { getSupabaseAdmin } from "@/lib/supabase";
 import { supabaseIsConfigured } from "@/lib/engine/guards";
 import { assessTrust } from "@/lib/engine/trust";
 import { velocityReport, type VelocityReport } from "@/lib/engine/velocity";
+import {
+  fetchWatchlistProductInfo,
+  backfillWatchlistProductInfo,
+} from "@/lib/engine/productBackfill";
 import type { MarketSnapshot } from "@/lib/data/types";
 
 export interface DealEngine {
@@ -51,6 +55,9 @@ export interface Deal {
   id: number;
   asin: string;
   title: string;
+  /** Catalog display facts (migration 017, from the watchlist row). */
+  brand: string | null;
+  imageUrl: string | null;
   buyPrice: number;
   sellPrice: number;
   profit: number;
@@ -169,6 +176,8 @@ export async function GET(): Promise<NextResponse> {
       id: row.id,
       asin: row.asin,
       title: row.asin,
+      brand: null,
+      imageUrl: null,
       buyPrice: Number(row.buy_price),
       sellPrice,
       profit: netProfit,
@@ -263,6 +272,65 @@ export async function GET(): Promise<NextResponse> {
     }
   } catch {
     // Velocity enrichment is observability — the deals list stands without it.
+  }
+
+  // Product display info (migration 017): replace the bare-ASIN title
+  // with the watchlist row's catalog title/brand/image. Rows still
+  // missing a title get a lazy backfill — one catalog fetch per ASIN,
+  // capped per request so the page never waits on a long SP-API tail;
+  // the rest backfill on later loads/scans. Best-effort, like velocity:
+  // a missing migration or SP-API failure leaves titles as ASINs.
+  try {
+    const asins = deals.map((d) => d.asin);
+    if (asins.length > 0) {
+      const { data: wRows } = await admin
+        .from("watchlist")
+        .select("asin, product_title, product_brand, product_image_url")
+        .in("asin", asins);
+      const byAsin = new Map<
+        string,
+        { title: string | null; brand: string | null; imageUrl: string | null }
+      >();
+      for (const r of (wRows ?? []) as Array<{
+        asin: string;
+        product_title: string | null;
+        product_brand: string | null;
+        product_image_url: string | null;
+      }>) {
+        byAsin.set(r.asin, {
+          title: r.product_title,
+          brand: r.product_brand,
+          imageUrl: r.product_image_url,
+        });
+      }
+      const applyInfo = (
+        d: Deal,
+        info: { title: string | null; brand: string | null; imageUrl: string | null }
+      ) => {
+        if (info.title) d.title = info.title;
+        d.brand = info.brand;
+        d.imageUrl = info.imageUrl;
+      };
+      for (const d of deals) {
+        const info = byAsin.get(d.asin);
+        if (info) applyInfo(d, info);
+      }
+      const BACKFILL_MAX_PER_REQUEST = 3;
+      let backfilled = 0;
+      for (const d of deals) {
+        if (backfilled >= BACKFILL_MAX_PER_REQUEST) break;
+        const stored = byAsin.get(d.asin);
+        if (!stored || stored.title !== null) continue;
+        // Confirm the row really is title-less, then fetch + persist.
+        const current = await fetchWatchlistProductInfo(admin, d.asin);
+        if (!current || current.title !== null) continue;
+        const info = await backfillWatchlistProductInfo(admin, d.asin);
+        backfilled++;
+        if (info) applyInfo(d, info);
+      }
+    }
+  } catch {
+    // Display enrichment is observability — the deals list stands without it.
   }
 
   return NextResponse.json(deals);
