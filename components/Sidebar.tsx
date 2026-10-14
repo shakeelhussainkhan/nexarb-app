@@ -10,6 +10,7 @@ const navItems = [
   { label: "Deals", href: "/dashboard/deals", icon: TagIcon },
   { label: "Purchases", href: "/dashboard/purchases", icon: CardIcon },
   { label: "Approvals", href: "/dashboard/approvals", icon: TagIcon },
+  { label: "Suppliers", href: "/dashboard/suppliers", icon: TagIcon },
   { label: "Alibaba", href: "/dashboard/alibaba", icon: TagIcon },
   { label: "Compliance", href: "/dashboard/compliance", icon: TagIcon },
   { label: "Listings", href: "/dashboard/listings", icon: TagIcon },
@@ -234,3 +235,4 @@ function UsersIcon({ size = 16 }: { size?: number }) {
     </svg>
   );
 }
+
