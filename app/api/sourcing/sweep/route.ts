@@ -87,6 +87,8 @@ export async function POST(): Promise<NextResponse> {
           list.push({
             asin: match.asin,
             title: match.title,
+            brand: match.brand,
+            imageUrl: match.imageUrl,
             buyPrice: item.price,
             sourceUrl: item.url,
           });
