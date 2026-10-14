@@ -24,6 +24,9 @@ export const MAX_CANDIDATES_PER_INGEST = 100;
 export interface UpcMatch {
   asin: string;
   title: string;
+  /** Catalog display facts (migration 017), when the matcher had them. */
+  brand?: string | null;
+  imageUrl?: string | null;
   buyPrice: number;
   sourceUrl?: string | null; // retailer product URL captured at discovery
 }
@@ -37,6 +40,9 @@ export interface WatchlistRow {
   category: string | null;
   active: boolean;
   source_url?: string | null; // migration 008 — feeds assisted checkout
+  product_title: string | null; // migration 017 — Amazon catalog item name
+  product_brand: string | null; // migration 017
+  product_image_url: string | null; // migration 017
 }
 
 export interface BuildPayloadOptions {
@@ -74,6 +80,9 @@ export function buildWatchlistPayload(
       category: null,
       active: true,
       source_url: m.sourceUrl ?? null,
+      product_title: m.title?.trim() ? m.title : null,
+      product_brand: m.brand ?? null,
+      product_image_url: m.imageUrl ?? null,
     });
   }
   return rows;
