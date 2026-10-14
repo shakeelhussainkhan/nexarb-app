@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef } from "react";
+import Link from "next/link";
 import { useUser } from "@clerk/nextjs";
 import { useSearchParams } from "next/navigation";
 
@@ -782,24 +783,24 @@ export default function DashboardClient() {
                             <td className="px-4 py-3.5 max-w-56">
                               <div className="flex items-start gap-2.5">
                                 {deal.imageUrl && (
-                                  <img
-                                    src={deal.imageUrl}
-                                    alt=""
-                                    loading="lazy"
-                                    className="w-10 h-10 shrink-0 rounded-lg border border-gray-100 object-contain bg-white"
-                                  />
+                                  <Link href={`/dashboard/deals/${deal.asin}`} className="shrink-0 cursor-pointer" title={deal.title}>
+                                    <img
+                                      src={deal.imageUrl}
+                                      alt=""
+                                      loading="lazy"
+                                      className="w-10 h-10 shrink-0 rounded-lg border border-gray-100 object-contain bg-white"
+                                    />
+                                  </Link>
                                 )}
                                 <div className="min-w-0">
-                                  <a
-                                    href={`https://www.amazon.com/dp/${deal.asin}`}
-                                    target="_blank"
-                                    rel="noopener noreferrer"
+                                  <Link
+                                    href={`/dashboard/deals/${deal.asin}`}
                                     className="font-medium leading-snug hover:underline block truncate"
                                     style={{ color: "#0D1B2A" }}
                                     title={deal.title}
                                   >
                                     {deal.title}
-                                  </a>
+                                  </Link>
                                   <p className="text-[11px] text-gray-400 mt-0.5">{deal.brand ? `${deal.brand} · ` : ""}{deal.asin}</p>
                                 </div>
                               </div>
