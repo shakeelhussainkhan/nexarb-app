@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useMemo, useEffect, useCallback, Fragment } from "react";
+import Link from "next/link";
 import PurchaseGuard from "@/components/PurchaseGuard";
 import HistoryPanel from "@/components/HistoryPanel";
 
@@ -352,17 +353,23 @@ export default function DealsPage() {
                   <td className="px-4 py-3.5 max-w-64" style={{ color: "#0D1B2A" }}>
                     <div className="flex items-start gap-2.5">
                       {deal.imageUrl && (
-                        <img
-                          src={deal.imageUrl}
-                          alt=""
-                          loading="lazy"
-                          className="w-10 h-10 shrink-0 rounded-lg border border-gray-100 object-contain bg-white"
-                        />
+                        <Link href={`/dashboard/deals/${deal.asin}`} className="shrink-0 cursor-pointer" title={deal.title}>
+                          <img
+                            src={deal.imageUrl}
+                            alt=""
+                            loading="lazy"
+                            className="w-10 h-10 shrink-0 rounded-lg border border-gray-100 object-contain bg-white"
+                          />
+                        </Link>
                       )}
                       <div className="min-w-0">
-                        <span className="block font-medium leading-snug truncate" title={deal.title}>
+                        <Link
+                          href={`/dashboard/deals/${deal.asin}`}
+                          className="block font-medium leading-snug truncate hover:underline cursor-pointer"
+                          title={deal.title}
+                        >
                           {deal.title}
-                        </span>
+                        </Link>
                         <span className="block text-[11px] font-normal text-gray-400">
                           {deal.brand ? `${deal.brand} · ` : ""}{deal.asin} · {deal.category}
                         </span>
