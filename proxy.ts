@@ -34,6 +34,11 @@ const isPublicRoute = createRouteMatcher([
 //   /api/compliance/shipments/[id]/package — resolveUser (read-only)
 //   /api/compliance/alerts/run  — resolveUser (daily monitor evaluates and
 //                                 sends Telegram compliance alerts)
+//   /api/sourcing/petra         — resolveUser (key or session; supplier
+//                                 catalog ingest — data only, no ordering)
+//   /api/sourcing/petra/match   — resolveUser (bounded UPC→ASIN match pass)
+//   /api/sourcing/petra/scan    — resolveUser (bounded pricing/estimate pass)
+//   /api/suppliers              — GET resolveUser (supplier offers read)
 // NOT included: /api/purchases/[id]/approve (approvals stay session-gated
 // here AND in the handler) and every other API route — several rely on this
 // middleware as their only auth, so the bypass must stay path-exact. Plain
@@ -53,6 +58,10 @@ const API_KEY_PATH_RES: RegExp[] = [
   /^\/api\/compliance\/shipments$/,
   /^\/api\/compliance\/shipments\/[^/]+\/package$/,
   /^\/api\/compliance\/alerts\/run$/,
+  /^\/api\/sourcing\/petra$/,
+  /^\/api\/sourcing\/petra\/match$/,
+  /^\/api\/sourcing\/petra\/scan$/,
+  /^\/api\/suppliers$/,
 ]
 
 export default clerkMiddleware(async (auth, request) => {
@@ -70,3 +79,4 @@ export const config = {
     '/(api|trpc)(.*)',
   ],
 }
+
