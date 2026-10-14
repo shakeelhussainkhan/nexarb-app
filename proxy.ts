@@ -38,6 +38,10 @@ const isPublicRoute = createRouteMatcher([
 //                                 catalog ingest — data only, no ordering)
 //   /api/sourcing/petra/match   — resolveUser (bounded UPC→ASIN match pass)
 //   /api/sourcing/petra/scan    — resolveUser (bounded pricing/estimate pass)
+//   /api/sourcing/frontier      — resolveUser (key or session; supplier
+//                                 catalog ingest — data only, no ordering)
+//   /api/sourcing/frontier/match — resolveUser (bounded UPC→ASIN match pass)
+//   /api/sourcing/frontier/scan — resolveUser (bounded pricing/estimate pass)
 //   /api/suppliers              — GET resolveUser (supplier offers read)
 // NOT included: /api/purchases/[id]/approve (approvals stay session-gated
 // here AND in the handler) and every other API route — several rely on this
@@ -61,6 +65,9 @@ const API_KEY_PATH_RES: RegExp[] = [
   /^\/api\/sourcing\/petra$/,
   /^\/api\/sourcing\/petra\/match$/,
   /^\/api\/sourcing\/petra\/scan$/,
+  /^\/api\/sourcing\/frontier$/,
+  /^\/api\/sourcing\/frontier\/match$/,
+  /^\/api\/sourcing\/frontier\/scan$/,
   /^\/api\/suppliers$/,
 ]
 
