@@ -276,12 +276,13 @@ export function parsePetraCsv(text: string): PetraParseResult {
 }
 
 /**
- * Coerce one untrusted JSON object (the ingest route's body shape — the
- * parser's output shape) into a SupplierOffer, or null when it lacks the
- * minimum viable fields (SKU + a positive cost). The supplier is pinned to
- * "petra" server-side; a body can never smuggle in another supplier.
+ * Coerce one untrusted JSON object (the ingest routes' body shape — the
+ * parsers' output shape) into a SupplierOffer, or null when it lacks the
+ * minimum viable fields (SKU + a positive cost). The supplier is pinned
+ * server-side to the route's own supplier (default "petra"; the Frontier
+ * route passes "frontier") — a body can never smuggle in another supplier.
  */
-export function coerceSupplierOffer(raw: unknown): SupplierOffer | null {
+export function coerceSupplierOffer(raw: unknown, supplier: string = "petra"): SupplierOffer | null {
   if (!raw || typeof raw !== "object") return null;
   const r = raw as Record<string, unknown>;
   const str = (v: unknown): string | null =>
@@ -293,7 +294,7 @@ export function coerceSupplierOffer(raw: unknown): SupplierOffer | null {
   if (!supplierSku || costPrice === null || costPrice <= 0) return null;
   const qty = num(r.qtyAvailable);
   return {
-    supplier: "petra",
+    supplier,
     supplierSku,
     vendorSku: str(r.vendorSku),
     title: str(r.title) ?? supplierSku,
