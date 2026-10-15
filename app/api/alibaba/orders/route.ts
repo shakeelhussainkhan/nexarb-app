@@ -9,11 +9,12 @@ import {
   draftBlockReason,
   newAlibabaOrderRef,
   ordersLiveFromEnv,
-  totalsFromLanded,
+  totalsFromLandedWithFreight,
 } from "@/lib/alibaba/ordersCore";
 import {
   insertOrder,
   listOrders,
+  quoteDraftFreight,
   reconcileIntentState,
   type AlibabaOrderRecord,
 } from "@/lib/alibaba/orders";
@@ -22,9 +23,14 @@ import {
 // POST (session only): draft an order from a sourced Alibaba product.
 //   Pricing is recomputed SERVER-SIDE from the live product description
 //   with the same MOQ/ladder landed-cost math as sourcing — the client
-//   never asserts a price. Compliance screening runs here: a BLOCKED
-//   product cannot become an order (422). A draft spends nothing; it can
-//   only move forward by becoming a purchase intent (purchases pipeline).
+//   never asserts a price. The draft total carries REAL freight, quoted
+//   live from /order/freight/calculate: the description's nominal
+//   shipping figure is not a freight price, and an approval is only
+//   meaningful against a true total — so when freight cannot be quoted
+//   the draft fails (422) instead of falling back to the nominal fee.
+//   Compliance screening runs here: a BLOCKED product cannot become an
+//   order (422). A draft spends nothing; it can only move forward by
+//   becoming a purchase intent (purchases pipeline).
 // GET (session or API key): list the caller's orders, newest first, with
 //   each linked intent's current status so the UI can show the approval
 //   state without a second round-trip.
@@ -91,7 +97,22 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       { status: 422 }
     );
   }
-  const totals = totalsFromLanded(landed);
+
+  // Real freight, quoted now: the totals the founder will approve must
+  // be the totals placement will charge. No quote -> no draft.
+  const freightRes = await quoteDraftFreight(authRes.cfg, authRes.token, {
+    eCompanyId: detail.eCompanyId,
+    productId: detail.productId,
+    skuId: landed.skuId || null,
+    qty: landed.orderQty,
+  });
+  if (!freightRes.ok || !freightRes.quote) {
+    return NextResponse.json(
+      { success: false, error: freightRes.error ?? "could not quote freight" },
+      { status: 422 }
+    );
+  }
+  const totals = totalsFromLandedWithFreight(landed, freightRes.quote.freightFee);
 
   const inserted = await insertOrder(admin, {
     userId: identity.userId,
@@ -109,6 +130,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     moq: detail.moq,
     offerSnapshot: { detail, landed },
     screening,
+    freightQuote: freightRes.quote,
   });
   if (!inserted.ok || !inserted.order) {
     return NextResponse.json({ success: false, error: inserted.error ?? "Could not save the draft order." }, { status: 500 });
