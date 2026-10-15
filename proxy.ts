@@ -54,10 +54,18 @@ const isPublicRoute = createRouteMatcher([
 //                                 module ingestion — bounded SP-API
 //                                 Orders/Finances sync, data only)
 //   /api/orders/journeys        — GET resolveUser (read-only unified
-//                                 order-lifecycle view, PR-D1).
-//                                 /api/orders/external is NOT bypassed:
-//                                 registering an external order stays
-//                                 session-only, enforced in its handler.
+//                                 order-lifecycle view, PR-D1)
+//   /api/orders/external        — POST resolveUser (register an external
+//                                 order; PR-D1 shipped it session-only —
+//                                 the founder directed 2026-10-15 that
+//                                 Muse registers portal orders for him,
+//                                 so the cron key may create rows too;
+//                                 key-created rows carry milestone
+//                                 source "automation", session rows
+//                                 "manual")
+//   /api/orders/external/[id]/milestones — POST resolveUser (append one
+//                                 journey milestone; the Petra email
+//                                 watch's write path as evidence arrives)
 // NOT included: /api/suppliers/promote (session-only founder decision,
 // enforced in the handler like /api/approvals POST),
 // /api/purchases/[id]/approve (approvals stay session-gated here AND in
@@ -91,6 +99,8 @@ const API_KEY_PATH_RES: RegExp[] = [
   /^\/api\/suppliers$/,
   /^\/api\/finances\/sync$/,
   /^\/api\/orders\/journeys$/,
+  /^\/api\/orders\/external$/,
+  /^\/api\/orders\/external\/[^/]+\/milestones$/,
 ]
 
 export default clerkMiddleware(async (auth, request) => {

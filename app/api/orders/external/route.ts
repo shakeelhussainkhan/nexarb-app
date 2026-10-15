@@ -1,28 +1,40 @@
 import { NextRequest, NextResponse } from "next/server";
-import { auth } from "@clerk/nextjs/server";
+import { resolveUser } from "@/lib/auth/resolveUser";
 import { getSupabaseAdmin } from "@/lib/supabase";
 import { supabaseIsConfigured } from "@/lib/engine/guards";
 import { createExternalOrder } from "@/lib/lifecycle/external";
 
-// POST /api/orders/external — SESSION-ONLY (deliberately NOT in the
-// proxy.ts API-key bypass list, and this handler uses Clerk auth()
-// directly, never resolveUser): registering an external order is a
-// founder record-keeping act, like creating an Alibaba draft.
+// POST /api/orders/external — Clerk session OR personal API key
+// (X-NexArb-Key) via resolveUser, like the other automation-readable
+// routes. PR-D1 shipped this session-only; the founder then directed
+// (2026-10-15) that Muse register distributor portal orders on his
+// behalf going forward — a cron-key write path is what makes that
+// possible, and the Petra email watch appends milestones through the
+// sibling route (POST /api/orders/external/[id]/milestones). The
+// resolveUser decision rules are unchanged: a presented plausible key
+// decides alone (an invalid/revoked key rejects — it never falls back
+// to an ambient session), and no key means the session decides.
 //
 // An external order is one placed OUTSIDE the app — e.g. the Petra
 // portal order the founder placed in his own browser. Body:
 //   { ref, supplier, title,            — required, non-empty strings
 //     asin?, qty?, amount?, currency? } — optional facts, stored as given
-// The row is created truthfully at the stage the founder reports: a
-// portal order exists and is awaiting fulfillment, so the journey
-// starts with one milestone — { stage: "placed", source: "manual" } —
-// and later evidence (confirmation/invoice/tracking emails, via
-// appendExternalMilestone) extends it. No stage beyond `placed` is
-// asserted here, and no demo/seed data is ever written.
+// The row is created truthfully at the stage the order is known to be
+// at: a portal order exists and is awaiting fulfillment, so the journey
+// starts with one milestone — { stage: "placed" } — whose `source`
+// records HOW the row got here: "manual" for a session (the founder
+// typed it into the Orders page) or "automation" for an API-key write
+// (Muse registering a portal order from its confirmation email).
+// Later evidence (confirmation/invoice/tracking emails, via
+// appendExternalMilestone) extends the journey. No stage beyond
+// `placed` is asserted here, and no demo/seed data is ever written.
 export async function POST(req: NextRequest): Promise<NextResponse> {
   try {
-    const { userId } = await auth();
-    if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    const identity = await resolveUser(req);
+    if (identity.kind !== "identity") {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+    const userId = identity.userId;
     if (!supabaseIsConfigured(process.env)) {
       return NextResponse.json(
         { error: "Supabase is not configured in this environment, so external orders cannot be recorded." },
@@ -76,7 +88,13 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       amount,
       currency,
       status: "placed",
-      milestones: [{ stage: "placed", at: new Date().toISOString(), source: "manual" }],
+      milestones: [
+        {
+          stage: "placed",
+          at: new Date().toISOString(),
+          source: identity.via === "api-key" ? "automation" : "manual",
+        },
+      ],
     });
     return NextResponse.json({ order }, { status: 201 });
   } catch (e) {
