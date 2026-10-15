@@ -11,7 +11,12 @@ import {
   supabaseIsConfigured,
   type SpendUsage,
 } from "@/lib/engine/guards";
-import { canTransitionOrder, evaluateDraftEconomics } from "@/lib/alibaba/ordersCore";
+import {
+  canTransitionOrder,
+  evaluateDraftEconomics,
+  evaluateImportBenchmarkEligibility,
+} from "@/lib/alibaba/ordersCore";
+import { detectCategory, type ProductCategory } from "@/lib/compliance/core";
 import { getSupabaseAdmin } from "@/lib/supabase";
 import { getOrder, updateOrder } from "@/lib/alibaba/orders";
 
@@ -25,7 +30,13 @@ import { getOrder, updateOrder } from "@/lib/alibaba/orders";
 //      fee-stack math and 20% target margin as the retail verdict, minus
 //      the velocity leg (a not-yet-listed import has no BSR of its own) —
 //      must be BUY;
-//   2. Amazon eligibility synchronously re-checked (never cached-only);
+//   2. Amazon eligibility synchronously re-checked (never cached-only),
+//      then read through IMPORT semantics (evaluateImportBenchmark-
+//      Eligibility, founder decision 2026-10-15): the checked ASIN is a
+//      benchmark — a pricing reference for a product that will list as a
+//      NEW own-brand ASIN — so a brand-level BLOCK on an open category
+//      warns instead of refusing, while a compliance-BLOCKED product or
+//      a category a new listing cannot enter still refuses;
 //   3. guardrail caps from capsFromEnv (daily / per-order; the per-ASIN
 //      unit cap is a retail guardrail and does not apply to import
 //      intents — see exemptUnitsCap in lib/engine/guards) — the caps'
@@ -89,6 +100,34 @@ export async function POST(
   });
   const eligibility = await checkEligibility(spApiConfigFromEnv(process.env), order.targetAsin, eligibilityCache);
 
+  // Import semantics for the benchmark's eligibility (ordersCore): a
+  // brand-level BLOCK on an open category becomes a warning the founder
+  // approves with open eyes; a compliance-blocked product or a gated
+  // category refuses here, before caps are even tallied.
+  const category = (order.screeningCategory as ProductCategory | null) ?? detectCategory(order.title);
+  const benchmark = evaluateImportBenchmarkEligibility({
+    eligibilityState: eligibility.state,
+    benchmarkAsin: order.targetAsin,
+    screeningVerdict: order.screeningVerdict,
+    screeningReasons: order.screeningReasons,
+    category,
+  });
+  if (benchmark.outcome === "refuse") {
+    return NextResponse.json(
+      {
+        success: false,
+        error: "Purchase intent blocked by guardrails",
+        reasons: [benchmark.refusalReason as string],
+        verdict: evaluation.verdict,
+        verdictReasons: evaluation.reasons,
+        eligibility,
+        warnings: [],
+      },
+      { status: 422 }
+    );
+  }
+  const warnings: string[] = benchmark.warning ? [benchmark.warning] : [];
+
   // Gate 3+4: caps + kill switch, usage tallied exactly like /api/purchases.
   const caps = capsFromEnv(process.env);
   const killSwitchOn = killSwitchFromEnv(process.env);
@@ -114,6 +153,7 @@ export async function POST(
     killSwitchOn,
     recheckDone: true, // eligibility was just re-checked above
     exemptUnitsCap: true, // import intent: bulk qty is the point; dollar caps still bind
+    waiveEligibilityBlock: benchmark.outcome === "warn", // brand-level benchmark block, open category (above)
   });
   if (!decision.allowed) {
     return NextResponse.json(
@@ -124,6 +164,7 @@ export async function POST(
         verdict: evaluation.verdict,
         verdictReasons: evaluation.reasons,
         eligibility,
+        warnings,
       },
       { status: 422 }
     );
@@ -144,7 +185,10 @@ export async function POST(
       retailer_url: order.detailUrl,
     });
     if (error) throw new Error(error.message);
-    const audit = buildAuditEntry(intentId, "intent.created", identity.userId, `From Alibaba order ${order.ref}`);
+    const auditReason = benchmark.warning
+      ? `From Alibaba order ${order.ref} — ELIGIBILITY WARNING: ${benchmark.warning}`
+      : `From Alibaba order ${order.ref}`;
+    const audit = buildAuditEntry(intentId, "intent.created", identity.userId, auditReason);
     const { error: auditError } = await sb.from("purchase_audit").insert({
       purchase_id: intentId,
       action: audit.action,
@@ -159,12 +203,21 @@ export async function POST(
     );
   }
 
+  // The warning is persisted on the order's raw blob (the established
+  // pattern for derived order facts — freightQuote, payUrl, lastSync):
+  // merged, never overwriting what placement/sync recorded there, and
+  // surfaced on the Alibaba page via the record's eligibilityWarning.
+  const prevRaw =
+    order.alibabaStatusRaw && typeof order.alibabaStatusRaw === "object" && !Array.isArray(order.alibabaStatusRaw)
+      ? (order.alibabaStatusRaw as Record<string, unknown>)
+      : {};
   const updated = await updateOrder(admin, identity.userId, order.id, {
     purchase_intent_id: intentId,
     status: "pending_approval",
+    ...(benchmark.warning ? { alibaba_status_raw: { ...prevRaw, eligibilityWarning: benchmark.warning } } : {}),
   });
   return NextResponse.json(
-    { success: true, order: updated ?? order, intentId, caps },
+    { success: true, order: updated ?? order, intentId, caps, warnings },
     { status: 201 }
   );
 }
