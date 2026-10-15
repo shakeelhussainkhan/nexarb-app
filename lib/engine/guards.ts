@@ -21,7 +21,7 @@ export interface SpendCaps {
 
 // Founder-confirmed default guardrails (2026-10-14).
 export const DEFAULT_SPEND_CAPS: SpendCaps = {
-  dailySpendCap: 2500, // founder-confirmed default
+  dailySpendCap: 5000, // founder-confirmed default (raised from 2500 on 2026-10-15 for the Q4 import program; per-order cap stays 1500, units cap stays 20)
   perOrderCap: 1500, // founder-confirmed default (raised from 1000 on 2026-10-15)
   maxUnitsPerAsin: 20, // founder-confirmed default
 };
