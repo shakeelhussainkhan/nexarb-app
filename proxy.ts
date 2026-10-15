@@ -53,6 +53,11 @@ const isPublicRoute = createRouteMatcher([
 //   /api/finances/sync          — resolveUser (key or session; Money
 //                                 module ingestion — bounded SP-API
 //                                 Orders/Finances sync, data only)
+//   /api/orders/journeys        — GET resolveUser (read-only unified
+//                                 order-lifecycle view, PR-D1).
+//                                 /api/orders/external is NOT bypassed:
+//                                 registering an external order stays
+//                                 session-only, enforced in its handler.
 // NOT included: /api/suppliers/promote (session-only founder decision,
 // enforced in the handler like /api/approvals POST),
 // /api/purchases/[id]/approve (approvals stay session-gated here AND in
@@ -85,6 +90,7 @@ const API_KEY_PATH_RES: RegExp[] = [
   /^\/api\/sourcing\/evaluate$/,
   /^\/api\/suppliers$/,
   /^\/api\/finances\/sync$/,
+  /^\/api\/orders\/journeys$/,
 ]
 
 export default clerkMiddleware(async (auth, request) => {
