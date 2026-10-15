@@ -12,6 +12,8 @@ import { getSupabaseAdmin } from "@/lib/supabase";
 //   supplier   — default "petra"
 //   matched=1  — only offers resolved to an ASIN
 //   priced=1   — only offers with a stored Amazon price + estimate
+//   candidates=1 — only offers whose evaluation verdict is "candidate"
+//                  (migration 019), ranked by eval score
 //   q          — search title / brand / SKU / UPC / ASIN
 //   minMargin  — minimum est. margin percent (e.g. 25)
 //   limit      — default 200, max 500
@@ -43,6 +45,11 @@ interface OfferRow {
   est_net: number | string | null;
   est_margin_pct: number | string | null;
   priced_at: string | null;
+  eval_verdict: string | null;
+  eval_score: number | string | null;
+  eval_reasons: unknown;
+  evaluated_at: string | null;
+  promoted_watchlist_asin: string | null;
   first_seen_at: string;
   last_seen_at: string;
 }
@@ -62,6 +69,7 @@ export async function GET(req: Request): Promise<NextResponse> {
   const supplier = (url.searchParams.get("supplier") ?? "petra").trim() || "petra";
   const matchedOnly = url.searchParams.get("matched") === "1";
   const pricedOnly = url.searchParams.get("priced") === "1";
+  const candidatesOnly = url.searchParams.get("candidates") === "1";
   const q = (url.searchParams.get("q") ?? "").replace(/[%_,()]/g, " ").trim();
   const minMarginRaw = Number(url.searchParams.get("minMargin"));
   const minMargin = Number.isFinite(minMarginRaw) && url.searchParams.has("minMargin")
@@ -80,24 +88,34 @@ export async function GET(req: Request): Promise<NextResponse> {
     };
     const baseCount = () =>
       admin.from("supplier_offers").select("id", { count: "exact", head: true }).eq("supplier", supplier);
-    const [total, matched, pending, priced] = await Promise.all([
+    const [total, matched, pending, priced, candidates] = await Promise.all([
       countFor((qb) => qb),
       countFor((qb) => qb.eq("match_status", "matched")),
       countFor((qb) => qb.eq("match_status", "pending")),
       countFor((qb) => qb.not("priced_at", "is", null)),
+      countFor((qb) => qb.eq("eval_verdict", "candidate")),
     ]);
 
     let query = admin
       .from("supplier_offers")
       .select(
-        "id, supplier, supplier_sku, vendor_sku, title, brand, upc, cost_price, map_price, msrp, qty_available, image_url, product_class, subcategory, weight_lb, origin_country, matched_asin, match_status, amazon_price, est_net, est_margin_pct, priced_at, first_seen_at, last_seen_at"
+        "id, supplier, supplier_sku, vendor_sku, title, brand, upc, cost_price, map_price, msrp, qty_available, image_url, product_class, subcategory, weight_lb, origin_country, matched_asin, match_status, amazon_price, est_net, est_margin_pct, priced_at, eval_verdict, eval_score, eval_reasons, evaluated_at, promoted_watchlist_asin, first_seen_at, last_seen_at"
       )
       .eq("supplier", supplier)
-      .order("est_margin_pct", { ascending: false, nullsFirst: false })
-      .order("last_seen_at", { ascending: false })
       .limit(limit);
+    if (candidatesOnly) {
+      // The shortlist ranks by evaluation score, not raw margin.
+      query = query
+        .order("eval_score", { ascending: false, nullsFirst: false })
+        .order("last_seen_at", { ascending: false });
+    } else {
+      query = query
+        .order("est_margin_pct", { ascending: false, nullsFirst: false })
+        .order("last_seen_at", { ascending: false });
+    }
     if (matchedOnly) query = query.eq("match_status", "matched");
     if (pricedOnly) query = query.not("priced_at", "is", null);
+    if (candidatesOnly) query = query.eq("eval_verdict", "candidate");
     if (minMargin !== null) query = query.gte("est_margin_pct", minMargin);
     if (q) {
       query = query.or(
@@ -132,12 +150,19 @@ export async function GET(req: Request): Promise<NextResponse> {
       estNet: num(r.est_net),
       estMarginPct: num(r.est_margin_pct),
       pricedAt: r.priced_at,
+      evalVerdict: r.eval_verdict,
+      evalScore: num(r.eval_score),
+      evalReasons: Array.isArray(r.eval_reasons)
+        ? r.eval_reasons.filter((x): x is string => typeof x === "string")
+        : [],
+      evaluatedAt: r.evaluated_at,
+      promotedAsin: r.promoted_watchlist_asin,
       firstSeenAt: r.first_seen_at,
       lastSeenAt: r.last_seen_at,
     }));
     return NextResponse.json({
       success: true,
-      summary: { supplier, total, matched, pending, priced },
+      summary: { supplier, total, matched, pending, priced, candidates },
       offers,
     });
   } catch (e) {

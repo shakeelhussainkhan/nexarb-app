@@ -42,9 +42,13 @@ const isPublicRoute = createRouteMatcher([
 //                                 catalog ingest — data only, no ordering)
 //   /api/sourcing/frontier/match — resolveUser (bounded UPC→ASIN match pass)
 //   /api/sourcing/frontier/scan — resolveUser (bounded pricing/estimate pass)
+//   /api/sourcing/evaluate      — resolveUser (bounded verdict pass over
+//                                 matched + priced supplier offers)
 //   /api/suppliers              — GET resolveUser (supplier offers read)
-// NOT included: /api/purchases/[id]/approve (approvals stay session-gated
-// here AND in the handler) and every other API route — several rely on this
+// NOT included: /api/suppliers/promote (session-only founder decision,
+// enforced in the handler like /api/approvals POST),
+// /api/purchases/[id]/approve (approvals stay session-gated here AND in
+// the handler) and every other API route — several rely on this
 // middleware as their only auth, so the bypass must stay path-exact. Plain
 // regexes (not createRouteMatcher) so the dynamic-segment matching does not
 // depend on Clerk's pattern-syntax version.
@@ -68,6 +72,7 @@ const API_KEY_PATH_RES: RegExp[] = [
   /^\/api\/sourcing\/frontier$/,
   /^\/api\/sourcing\/frontier\/match$/,
   /^\/api\/sourcing\/frontier\/scan$/,
+  /^\/api\/sourcing\/evaluate$/,
   /^\/api\/suppliers$/,
 ]
 
