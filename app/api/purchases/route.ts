@@ -30,8 +30,8 @@ const eligibilityCache = new EligibilityCache();
 //   - engine verdict (computed server-side) is BUY
 //   - eligibility is synchronously re-checked here (direct lib import, not
 //     HTTP) and is not BLOCKED or UNKNOWN
-//   - spend caps pass (daily / per-order / per-ASIN; defaults — founder to
-//     confirm)
+//   - spend caps pass (daily / per-order / per-ASIN; founder-confirmed
+//     defaults, environment-overridable)
 //   - the purchasing kill switch is off
 // Otherwise 422 with the full list of blockers.
 // Persists to Supabase when configured, otherwise to a per-process in-memory
@@ -170,7 +170,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   }
 
   return NextResponse.json(
-    { intent, eligibility, capsNote: "Spend caps are defaults — founder to confirm." },
+    { intent, eligibility, capsNote: "Spend caps use founder-confirmed defaults unless overridden by environment variables." },
     { status: 201 }
   );
 }
