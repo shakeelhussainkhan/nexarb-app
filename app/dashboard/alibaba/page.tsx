@@ -37,6 +37,7 @@ type Order = {
   intentStatus: string | null;
   alibabaOrderId: string | null;
   payUrl: string | null;
+  lastSync: { at: string; stage: string; ok: boolean; detail: string } | null;
   shipmentId: string | null;
   createdAt: string;
 };
@@ -68,6 +69,15 @@ const ORDER_STATUS_STYLE: Record<string, { background: string; color: string }> 
 
 function money(n: number): string {
   return `$${n.toFixed(2)}`;
+}
+
+/** Clock time of the last recorded sync attempt (order.lastSync, built
+ * server-side by ordersCore buildSyncAttempt) — the full timestamp and
+ * failure detail live in the order's alibaba_status_raw. */
+function syncClock(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
 function screeningChip(v: string) {
@@ -419,9 +429,14 @@ export default function AlibabaPage() {
         <p className="text-sm text-gray-500 mb-4">
           Draft → purchase intent (Purchases page approval) → place. The guardrail caps apply to the
           intent exactly as for any other purchase.
-          {" "}
-          Placing an approved order creates a real Alibaba Trade Assurance order — you then
-          pay for it at Alibaba&rsquo;s cashier; NexArb itself never charges the order.
+          {!ordersLive && (
+            <>
+              {" "}
+              Alibaba order APIs are not live-verified yet, so an approved order stops at{" "}
+              <strong>ready to place</strong> — with its import shipment + compliance checklist
+              created — instead of being sent to Alibaba.
+            </>
+          )}
         </p>
         {orders.length === 0 ? (
           <div className="text-sm text-gray-500">No Alibaba orders yet. Draft one from a search result above.</div>
@@ -472,6 +487,11 @@ export default function AlibabaPage() {
                         <span className="text-xs font-semibold px-2 py-0.5 rounded" style={chip}>
                           {o.status.replace(/_/g, " ")}
                         </span>
+                        {o.lastSync ? (
+                          <div className="text-[11px] text-gray-400 mt-0.5">
+                            sync {o.lastSync.stage} · {o.lastSync.ok ? "ok" : "failed"} · {syncClock(o.lastSync.at)}
+                          </div>
+                        ) : null}
                       </td>
                       <td className="py-3 pr-4 text-sm">{o.intentStatus ?? (o.purchaseIntentId ? "—" : "none")}</td>
                       <td className="py-3">
