@@ -50,6 +50,9 @@ const isPublicRoute = createRouteMatcher([
 //   /api/sourcing/evaluate      — resolveUser (bounded verdict pass over
 //                                 matched + priced supplier offers)
 //   /api/suppliers              — GET resolveUser (supplier offers read)
+//   /api/finances/sync          — resolveUser (key or session; Money
+//                                 module ingestion — bounded SP-API
+//                                 Orders/Finances sync, data only)
 // NOT included: /api/suppliers/promote (session-only founder decision,
 // enforced in the handler like /api/approvals POST),
 // /api/purchases/[id]/approve (approvals stay session-gated here AND in
@@ -81,6 +84,7 @@ const API_KEY_PATH_RES: RegExp[] = [
   /^\/api\/sourcing\/frontier\/scan$/,
   /^\/api\/sourcing\/evaluate$/,
   /^\/api\/suppliers$/,
+  /^\/api\/finances\/sync$/,
 ]
 
 export default clerkMiddleware(async (auth, request) => {
