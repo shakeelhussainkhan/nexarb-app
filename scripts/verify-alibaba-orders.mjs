@@ -18,6 +18,8 @@ import {
   buildCreateRequest,
   parseCreateResponse,
   parsePayResult,
+  buildSyncAttempt,
+  lastSyncFromRaw,
   IMPORT_SHIP_TO,
 } from "@/lib/alibaba/ordersCore.ts";
 import { parseProductDescription, bestLandedCost } from "@/lib/alibaba/core.ts";
@@ -335,6 +337,41 @@ check("pay parse: UNPAY -> not paid", payUnpaid.paid === false && payUnpaid.stat
 const payFailed = parsePayResult({ value: { status: "PAY_FAILED" } });
 check("pay parse: PAY_FAILED -> not paid", payFailed.paid === false && payFailed.status === "PAY_FAILED");
 check("pay parse: garbage -> status null, not paid", (() => { const p = parsePayResult(null); return p.status === null && p.paid === false; })());
+
+// --- sync attempt record (the evidence every sync attempt must leave) -----------------
+const syncFail = buildSyncAttempt(
+  "pay_result",
+  false,
+  "Alibaba /alibaba/order/pay/result/query failed  [ISV/TradeNotFound]:  no such trade ",
+  new Date("2026-10-15T22:00:00.000Z")
+);
+check("sync attempt: stage + ok preserved", syncFail.stage === "pay_result" && syncFail.ok === false);
+check("sync attempt: stamps the given time", syncFail.at === "2026-10-15T22:00:00.000Z");
+check(
+  "sync attempt: detail whitespace-collapsed + trimmed",
+  syncFail.detail === "Alibaba /alibaba/order/pay/result/query failed [ISV/TradeNotFound]: no such trade",
+  syncFail.detail
+);
+check(
+  "sync attempt: detail truncates at 200 chars",
+  buildSyncAttempt("order_get", false, "x".repeat(500), new Date("2026-10-15T22:00:00.000Z")).detail.length === 200
+);
+check(
+  "sync attempt: empty detail falls back by ok",
+  buildSyncAttempt("token", false, "", new Date()).detail === "failed" &&
+    buildSyncAttempt("done", true, "  ", new Date()).detail === "ok"
+);
+check(
+  "lastSyncFromRaw: round-trips a recorded attempt",
+  JSON.stringify(lastSyncFromRaw({ lastSync: syncFail, payUrl: "https://cashier.alibaba.com/" })) === JSON.stringify(syncFail)
+);
+check(
+  "lastSyncFromRaw: missing/garbage raw -> null",
+  lastSyncFromRaw(null) === null &&
+    lastSyncFromRaw({}) === null &&
+    lastSyncFromRaw("nope") === null &&
+    lastSyncFromRaw({ lastSync: { at: 1, stage: "done", ok: true } }) === null
+);
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail > 0 ? 1 : 0);
