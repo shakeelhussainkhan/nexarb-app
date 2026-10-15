@@ -11,6 +11,13 @@ import {
   evaluateDraftEconomics,
   evaluatePlacement,
   mapAlibabaOrderStatus,
+  buildFreightRequest,
+  pickFreightSolution,
+  freightGuard,
+  buildCreateRequest,
+  parseCreateResponse,
+  parsePayResult,
+  IMPORT_SHIP_TO,
 } from "@/lib/alibaba/ordersCore.ts";
 import { parseProductDescription, bestLandedCost } from "@/lib/alibaba/core.ts";
 import { screenProduct } from "@/lib/compliance/core.ts";
@@ -87,6 +94,11 @@ check("sm: pending_approval -> approved allowed", canTransitionOrder("pending_ap
 check("sm: approved -> placed allowed", canTransitionOrder("approved", "placed") === true);
 check("sm: approved -> ready_to_place allowed", canTransitionOrder("approved", "ready_to_place") === true);
 check("sm: ready_to_place -> placed allowed", canTransitionOrder("ready_to_place", "placed") === true);
+check("sm: approved -> awaiting_payment allowed", canTransitionOrder("approved", "awaiting_payment") === true);
+check("sm: ready_to_place -> awaiting_payment allowed", canTransitionOrder("ready_to_place", "awaiting_payment") === true);
+check("sm: awaiting_payment -> placed allowed (paid)", canTransitionOrder("awaiting_payment", "placed") === true);
+check("sm: draft -> awaiting_payment FORBIDDEN (no path skips approval)", canTransitionOrder("draft", "awaiting_payment") === false);
+check("sm: pending_approval -> awaiting_payment FORBIDDEN", canTransitionOrder("pending_approval", "awaiting_payment") === false);
 check("sm: delivered is terminal", validNextOrderStatuses("delivered").length === 0);
 check("sm: cancelled is terminal", validNextOrderStatuses("cancelled").length === 0);
 check("sm: pending_approval can fall back to draft", canTransitionOrder("pending_approval", "draft") === true);
@@ -101,11 +113,11 @@ check("place: intent REJECTED -> refused", rejectedIntent.allowed === false);
 const draftOrderGate = evaluatePlacement({ orderStatus: "draft", intentStatus: "APPROVED", ordersLive: true });
 check("place: draft order -> refused even with an approved intent", draftOrderGate.allowed === false);
 const liveOk = evaluatePlacement({ orderStatus: "approved", intentStatus: "APPROVED", ordersLive: true });
-check("place: approved + APPROVED + live -> placed", liveOk.allowed === true && liveOk.outcome === "placed");
+check("place: approved + APPROVED + live -> awaiting_payment (created on Alibaba, unpaid)", liveOk.allowed === true && liveOk.outcome === "awaiting_payment");
 const darkOk = evaluatePlacement({ orderStatus: "approved", intentStatus: "APPROVED", ordersLive: false });
 check("place: approved + APPROVED + flag off -> ready_to_place (NOT placed)", darkOk.allowed === true && darkOk.outcome === "ready_to_place");
 const retryOk = evaluatePlacement({ orderStatus: "ready_to_place", intentStatus: "APPROVED", ordersLive: true });
-check("place: ready_to_place retry with live flag -> placed", retryOk.allowed === true && retryOk.outcome === "placed");
+check("place: ready_to_place retry with live flag -> awaiting_payment", retryOk.allowed === true && retryOk.outcome === "awaiting_payment");
 
 // --- caps are consumed from lib/engine/guards (single source), never hardcoded ---
 const defaultCaps = capsFromEnv({});
@@ -164,6 +176,111 @@ check("map: 'shipped' -> shipped", mapAlibabaOrderStatus("shipped") === "shipped
 check("map: 'Trade Complete' -> delivered", mapAlibabaOrderStatus("Trade Complete") === "delivered");
 check("map: unknown string -> null (status untouched)", mapAlibabaOrderStatus("awaiting_fulfillment_step_3") === null);
 check("map: non-string -> null", mapAlibabaOrderStatus(42) === null);
+
+// --- freight request shape (/order/freight/calculate, console-verified) ------------
+const freightReq = buildFreightRequest({ eCompanyId: "enc-company-9", productId: "1601191618851", skuId: "105532731428", qty: 350 });
+check("freight req: carries e_company_id + US destination", freightReq.e_company_id === "enc-company-9" && freightReq.destination_country === "US");
+check(
+  "freight req: product id is numeric, sku + quantity on the line",
+  freightReq.logistics_product_list.length === 1 &&
+    freightReq.logistics_product_list[0].product_id === 1601191618851 &&
+    freightReq.logistics_product_list[0].sku_id === "105532731428" &&
+    freightReq.logistics_product_list[0].quantity === 350,
+  JSON.stringify(freightReq)
+);
+const freightReqNoSku = buildFreightRequest({ eCompanyId: "c1", productId: "abc-123", skuId: null, qty: 5 });
+check(
+  "freight req: non-numeric id stays a string; missing sku is omitted, never null",
+  freightReqNoSku.logistics_product_list[0].product_id === "abc-123" && !("sku_id" in freightReqNoSku.logistics_product_list[0])
+);
+
+// --- freight solution pick: cheapest usable wins ------------------------------------
+const freightResp = {
+  result: {
+    value: [
+      { vendor_code: "ALI-EXPRESS-AIR", fee: { amount: 210.5, currency: "USD" }, delivery_time: "7-10 days", vendor_name: "Air" },
+      { vendor_code: "ALI-LOGISTICS-SEA", fee: { amount: "88.25", currency: "USD" }, delivery_time: "25-35 days", vendor_name: "Sea" },
+      { vendor_code: "NO-FEE", delivery_time: "?" },
+    ],
+  },
+};
+const picked = pickFreightSolution(freightResp);
+check(
+  "freight pick: cheapest usable solution (string fee parsed, fee-less entry skipped)",
+  picked !== null && picked.carrierCode === "ALI-LOGISTICS-SEA" && picked.freightFee === 88.25 && picked.currency === "USD" && picked.deliveryTime === "25-35 days" && picked.vendorName === "Sea",
+  JSON.stringify(picked)
+);
+check("freight pick: empty list -> null", pickFreightSolution({ result: { value: [] } }) === null);
+check("freight pick: garbage -> null", pickFreightSolution({ nope: true }) === null && pickFreightSolution(null) === null && pickFreightSolution("x") === null);
+check(
+  "freight pick: top-level value[] shape also parses",
+  pickFreightSolution({ value: [{ vendor_code: "V1", fee: { amount: 3 } }] })?.carrierCode === "V1"
+);
+
+// --- freight guard: real freight may not silently reprice an approved order --------
+const guardPass = freightGuard({ productTotal: 945.0, freightFee: 10.5, approvedTotal: 955.5, perOrderCap: 1000 });
+check("guard: cubes numbers (945 + 10.50 = 955.50 = approved) pass", guardPass.allowed === true, JSON.stringify(guardPass));
+const guardApprovalFail = freightGuard({ productTotal: 945.0, freightFee: 200, approvedTotal: 955.5, perOrderCap: 2000 });
+check(
+  "guard: freight pushing the total >10% over the approved total is refused, with numbers",
+  guardApprovalFail.allowed === false && guardApprovalFail.reasons.some((r) => r.includes("$1145.00") && r.includes("10%")),
+  JSON.stringify(guardApprovalFail)
+);
+const guardCapFail = freightGuard({ productTotal: 900, freightFee: 50, approvedTotal: 955.5, perOrderCap: 900 });
+check(
+  "guard: within +10% of approved but over the per-order cap is refused, with numbers",
+  guardCapFail.allowed === false && guardCapFail.reasons.some((r) => r.includes("per-order cap") && r.includes("$900.00")),
+  JSON.stringify(guardCapFail)
+);
+
+// --- create request shape (/buynow/order/create, console-verified) ------------------
+const createReq = buildCreateRequest({ ref: "AO-MV9VXZL3-1", carrierCode: "ALI-LOGISTICS-SEA", productId: "1601191618851", skuId: "105532731428", qty: 350 });
+check("create req: channel_refer_id is OUR order ref", createReq.channel_refer_id === "AO-MV9VXZL3-1");
+check(
+  "create req: carrier from freight + CN dispatch",
+  createReq.logistics_detail.carrier_code === "ALI-LOGISTICS-SEA" && createReq.logistics_detail.dispatch_location === "CN"
+);
+check(
+  "create req: ship-to is the Automated 3PL warehouse, East Hartford CT",
+  createReq.logistics_detail.shipment_address.address === "120 Tolland Street, Unit D" &&
+    createReq.logistics_detail.shipment_address.city === "East Hartford" &&
+    createReq.logistics_detail.shipment_address.contact_person === "Radu Daha" &&
+    createReq.logistics_detail.shipment_address.country === "United States" &&
+    createReq.logistics_detail.shipment_address.country_code === "US" &&
+    createReq.logistics_detail.shipment_address.zip === "06108" &&
+    IMPORT_SHIP_TO.zip === "06108",
+  JSON.stringify(createReq.logistics_detail.shipment_address)
+);
+check(
+  "create req: product line is numeric id + quantity + sku",
+  createReq.product_list.length === 1 &&
+    createReq.product_list[0].product_id === 1601191618851 &&
+    createReq.product_list[0].quantity === 350 &&
+    createReq.product_list[0].sku_id === "105532731428",
+  JSON.stringify(createReq.product_list)
+);
+
+// --- create response parse: value.trade_id + value.pay_url ---------------------------
+const createdParsed = parseCreateResponse({ result: { value: { trade_id: 800123456789, pay_url: "https://cashier.alibaba.com/pay/xyz" } } });
+check(
+  "create parse: numeric trade_id stringified, pay_url captured (result.value nesting)",
+  createdParsed.tradeId === "800123456789" && createdParsed.payUrl === "https://cashier.alibaba.com/pay/xyz",
+  JSON.stringify(createdParsed)
+);
+const createdFlat = parseCreateResponse({ value: { trade_id: "T-9", pay_url: "https://pay.example/9" } });
+check("create parse: top-level value nesting also parses", createdFlat.tradeId === "T-9" && createdFlat.payUrl === "https://pay.example/9");
+const createdNoTrade = parseCreateResponse({ result: { value: { pay_url: "https://pay.example/x" } } });
+check("create parse: missing trade_id -> null tradeId (caller treats as NOT created)", createdNoTrade.tradeId === null);
+check("create parse: garbage -> both null", (() => { const p = parseCreateResponse({}); return p.tradeId === null && p.payUrl === null; })());
+
+// --- pay result parse (/alibaba/order/pay/result/query) -------------------------------
+const paySuccess = parsePayResult({ result: { value: { status: "PAY_SUCCESS", pay_url: "https://cashier.alibaba.com/pay/xyz" } } });
+check("pay parse: PAY_SUCCESS -> paid, pay_url captured", paySuccess.paid === true && paySuccess.status === "PAY_SUCCESS" && paySuccess.payUrl === "https://cashier.alibaba.com/pay/xyz");
+const payUnpaid = parsePayResult({ value: { status: "UNPAY", reason_code: "NEVER_PAY_SUCCESS_IN_DROPSHIPER" } });
+check("pay parse: UNPAY -> not paid", payUnpaid.paid === false && payUnpaid.status === "UNPAY");
+const payFailed = parsePayResult({ value: { status: "PAY_FAILED" } });
+check("pay parse: PAY_FAILED -> not paid", payFailed.paid === false && payFailed.status === "PAY_FAILED");
+check("pay parse: garbage -> status null, not paid", (() => { const p = parsePayResult(null); return p.status === null && p.paid === false; })());
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail > 0 ? 1 : 0);
