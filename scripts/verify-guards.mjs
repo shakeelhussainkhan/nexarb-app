@@ -58,8 +58,8 @@ check("daily cap accumulation blocked", (() => {
     ...base(),
     qty: 9,
     unitPrice: 100,
-    usage: { spentToday: 1700, unitsForAsinToday: 0 },
-  }); // $1,700 already committed + $900 order > $2,500 daily cap
+    usage: { spentToday: 4200, unitsForAsinToday: 0 },
+  }); // $4,200 already committed + $900 order > $5,000 daily cap
   return !d.allowed && d.reasons.some((r) => r.includes("daily spend cap"));
 })());
 check("per-order cap allows a $1,400 order", (() => {
@@ -123,7 +123,7 @@ check("audit entry shape", (() => {
 // 9. Env parsing for caps and kill switch.
 check("capsFromEnv defaults", (() => {
   const c = capsFromEnv({});
-  return c.dailySpendCap === 2500 && c.perOrderCap === 1500 && c.maxUnitsPerAsin === 20;
+  return c.dailySpendCap === 5000 && c.perOrderCap === 1500 && c.maxUnitsPerAsin === 20;
 })());
 check("capsFromEnv overrides", (() => {
   const c = capsFromEnv({ NEXARB_DAILY_SPEND_CAP: "1000", NEXARB_PER_ORDER_CAP: "100", NEXARB_MAX_UNITS_PER_ASIN: "5" });
