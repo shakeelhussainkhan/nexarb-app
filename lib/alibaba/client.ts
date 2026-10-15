@@ -154,6 +154,21 @@ async function iopCall(
   }
 }
 
+/**
+ * Generic signed IOP call for API groups beyond sourcing (orders.ts uses
+ * this for the order flow). Same transport as every other call — the API
+ * name travels as the `method` parameter; signing happens inside iopCall.
+ */
+export async function callAlibabaApi(
+  cfg: AlibabaConfig,
+  accessToken: string,
+  method: string,
+  businessParams: Record<string, string>,
+  httpMethod: "GET" | "POST" = "POST"
+): Promise<{ ok: boolean; data?: unknown; error?: string }> {
+  return iopCall(cfg, method, businessParams, { accessToken, httpMethod });
+}
+
 /** Token create/refresh via the IOP gateway (POST, no access token). */
 async function callTokenEndpoint(
   cfg: AlibabaConfig,
