@@ -195,6 +195,9 @@ export interface AlibabaProductDetail {
   mainImage: string | null;
   moq: number | null;
   supplierName: string | null;
+  /** Encrypted supplier company id (`eCompanyId` in result_data) — the
+   * order freight API requires it as `e_company_id`. */
+  eCompanyId: string | null;
   currency: string | null;
   skus: AlibabaSku[];
 }
@@ -246,6 +249,10 @@ export function parseProductDescription(payload: unknown): AlibabaProductDetail 
       mainImage: str(data.main_image ?? data.image_url) || null,
       moq: num(data.min_order_quantity ?? data.moq),
       supplierName: supplier ? str(supplier.company_name ?? supplier.name) || null : null,
+      eCompanyId:
+        str(data.eCompanyId ?? data.e_company_id) ||
+        (supplier ? str(supplier.eCompanyId ?? supplier.e_company_id) : "") ||
+        null,
       currency: str(data.currency) || null,
       skus,
     };
