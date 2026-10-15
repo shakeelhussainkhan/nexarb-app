@@ -38,6 +38,7 @@ type Order = {
   alibabaOrderId: string | null;
   payUrl: string | null;
   lastSync: { at: string; stage: string; ok: boolean; detail: string } | null;
+  eligibilityWarning: string | null;
   shipmentId: string | null;
   createdAt: string;
 };
@@ -232,14 +233,17 @@ export default function AlibabaPage() {
         reasons?: string[];
         note?: string;
         placed?: boolean;
+        warnings?: string[];
       };
       if (!res.ok || !data.success) {
         const detail = data.reasons && data.reasons.length > 0 ? ` ${data.reasons.join(" ")}` : "";
         throw new Error(`${data.error ?? "action failed"}.${detail}`);
       }
+      const warningNote =
+        data.warnings && data.warnings.length > 0 ? ` ⚠ ${data.warnings.join(" ")}` : "";
       setNotice(
         action === "intent"
-          ? `Purchase intent created for ${order.ref} — approve or reject it on the Purchases page. Nothing is ordered before that approval.`
+          ? `Purchase intent created for ${order.ref} — approve or reject it on the Purchases page. Nothing is ordered before that approval.${warningNote}`
           : data.note ?? `Order ${order.ref} placed.`
       );
       await fetchOrders();
@@ -485,6 +489,11 @@ export default function AlibabaPage() {
                         {o.lastSync ? (
                           <div className="text-[11px] text-gray-400 mt-0.5">
                             sync {o.lastSync.stage} · {o.lastSync.ok ? "ok" : "failed"} · {syncClock(o.lastSync.at)}
+                          </div>
+                        ) : null}
+                        {o.eligibilityWarning ? (
+                          <div className="text-[11px] mt-0.5 max-w-[260px]" style={{ color: "#92400E" }} title={o.eligibilityWarning}>
+                            ⚠ eligibility warning — benchmark brand-blocked; own-brand listing (see intent)
                           </div>
                         ) : null}
                       </td>

@@ -52,6 +52,27 @@ check("APPROVAL_REQUIRED eligibility allowed (still only an intent)", (() => {
   return d.allowed;
 })());
 
+// 2b. Import benchmark brand-block waiver (founder decision 2026-10-15).
+// The flag is set ONLY by the Alibaba import intent route after
+// ordersCore's category decision; it waives the BLOCKED refusal and
+// nothing else.
+check("waiver: BLOCKED + waiveEligibilityBlock -> allowed (import path)", (() => {
+  const d = canCreateIntent({ ...base(), eligibility: "BLOCKED", waiveEligibilityBlock: true });
+  return d.allowed && d.reasons.length === 0;
+})());
+check("waiver: UNKNOWN + waiveEligibilityBlock -> still blocked", (() => {
+  const d = canCreateIntent({ ...base(), eligibility: "UNKNOWN", waiveEligibilityBlock: true });
+  return !d.allowed && d.reasons.some((r) => r.includes("UNKNOWN"));
+})());
+check("waiver: BLOCKED + waive + kill switch ON -> still blocked", (() => {
+  const d = canCreateIntent({ ...base(), eligibility: "BLOCKED", waiveEligibilityBlock: true, killSwitchOn: true });
+  return !d.allowed && d.reasons.some((r) => r.includes("kill switch"));
+})());
+check("waiver: BLOCKED + waive + SKIP verdict -> still blocked", (() => {
+  const d = canCreateIntent({ ...base(), eligibility: "BLOCKED", waiveEligibilityBlock: true, verdict: "SKIP" });
+  return !d.allowed && d.reasons.some((r) => r.includes("SKIP"));
+})());
+
 // 3. Spend caps.
 check("daily cap accumulation blocked", (() => {
   const d = canCreateIntent({
