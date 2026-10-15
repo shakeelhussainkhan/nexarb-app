@@ -121,14 +121,48 @@ export async function POST(
       alibaba_status_raw: placed.raw ?? { error: placed.error },
     });
     return NextResponse.json(
-      { success: false, placed: false, state: "failed", order: failed ?? order, error: placed.error },
+      {
+        success: false,
+        placed: false,
+        state: "failed",
+        order: failed ?? order,
+        error: placed.error,
+        // Never mask a failed write behind the fallback row: if recording
+        // the failure itself failed, the response says so.
+        ...(failed
+          ? {}
+          : {
+              warning:
+                "The placement failed and recording that failure on the order also failed — the order record may be stale.",
+            }),
+      },
       { status: 502 }
     );
   }
   const placedAt = new Date().toISOString();
-  order =
-    (await updateOrder(admin, identity.userId, order.id, {
-      status: "awaiting_payment",
+  const recorded = await updateOrder(admin, identity.userId, order.id, {
+    status: "awaiting_payment",
+    alibaba_order_id: placed.alibabaOrderId,
+    alibaba_status_raw: {
+      payUrl: placed.payUrl ?? null,
+      freightFee: placed.freightFee ?? null,
+      carrierCode: placed.carrierCode ?? null,
+      createRaw: placed.raw ?? null,
+      placedAt,
+    },
+    placed_at: placedAt,
+  });
+  // The order EXISTS on Alibaba now, whether or not the local write works.
+  // A failed write must never be masked behind a clean success (that is
+  // how trade 319281522001026345 was nearly lost: the awaiting_payment
+  // write violated the migration-020 CHECK). On failure, retry with a
+  // minimal patch that at least preserves the trade id, and surface a
+  // warning in the response either way.
+  let recordWarning: string | null = null;
+  if (recorded) {
+    order = recorded;
+  } else {
+    const minimal = await updateOrder(admin, identity.userId, order.id, {
       alibaba_order_id: placed.alibabaOrderId,
       alibaba_status_raw: {
         payUrl: placed.payUrl ?? null,
@@ -136,11 +170,22 @@ export async function POST(
         carrierCode: placed.carrierCode ?? null,
         createRaw: placed.raw ?? null,
         placedAt,
+        recordWarning: "status write failed",
       },
       placed_at: placedAt,
-    })) ?? order;
+    });
+    if (minimal) {
+      order = minimal;
+      recordWarning = `Order created on Alibaba (trade ${placed.alibabaOrderId}) but recording its status failed — the trade id has been saved; check the order record.`;
+    } else {
+      recordWarning = `Order created on Alibaba (trade ${placed.alibabaOrderId}) but recording the order FAILED — the trade id could NOT be saved in NexArb. Trade id: ${placed.alibabaOrderId}; payment link: ${placed.payUrl ?? "none returned by Alibaba"}. Save these now.`;
+    }
+  }
   const compliance = await ensureComplianceRecords(admin, identity.userId, order);
   const fresh = (await getOrder(admin, identity.userId, order.id)) ?? order;
+  const baseNote = placed.payUrl
+    ? `Order created on Alibaba (trade ${placed.alibabaOrderId}) — awaiting payment: ${placed.payUrl}`
+    : `Order created on Alibaba (trade ${placed.alibabaOrderId}) — awaiting payment. Alibaba returned no payment link; pay from your Alibaba orders page.`;
   return NextResponse.json({
     success: true,
     placed: true,
@@ -148,8 +193,7 @@ export async function POST(
     order: fresh,
     compliance,
     payUrl: placed.payUrl ?? null,
-    note: placed.payUrl
-      ? `Order created on Alibaba (trade ${placed.alibabaOrderId}) — awaiting payment: ${placed.payUrl}`
-      : `Order created on Alibaba (trade ${placed.alibabaOrderId}) — awaiting payment. Alibaba returned no payment link; pay from your Alibaba orders page.`,
+    ...(recordWarning ? { warning: recordWarning } : {}),
+    note: recordWarning ? `${baseNote} WARNING: ${recordWarning}` : baseNote,
   });
 }
