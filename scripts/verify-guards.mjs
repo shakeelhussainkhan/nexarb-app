@@ -53,12 +53,21 @@ check("APPROVAL_REQUIRED eligibility allowed (still only an intent)", (() => {
 })());
 
 // 3. Spend caps.
-check("daily cap exceeded blocked", (() => {
-  const d = canCreateIntent({ ...base(), usage: { spentToday: 450, unitsForAsinToday: 0 } }); // 450+100 > 500
+check("daily cap accumulation blocked", (() => {
+  const d = canCreateIntent({
+    ...base(),
+    qty: 9,
+    unitPrice: 100,
+    usage: { spentToday: 1700, unitsForAsinToday: 0 },
+  }); // $1,700 already committed + $900 order > $2,500 daily cap
   return !d.allowed && d.reasons.some((r) => r.includes("daily spend cap"));
 })());
-check("per-order cap blocked", (() => {
-  const d = canCreateIntent({ ...base(), qty: 10, unitPrice: 30 }); // $300 > $250
+check("per-order cap allows a $900 order", (() => {
+  const d = canCreateIntent({ ...base(), qty: 9, unitPrice: 100 }); // $900 <= $1,000
+  return d.allowed && d.reasons.length === 0;
+})());
+check("per-order cap blocks a $1,100 order", (() => {
+  const d = canCreateIntent({ ...base(), qty: 11, unitPrice: 100 }); // $1,100 > $1,000
   return !d.allowed && d.reasons.some((r) => r.includes("per-order cap"));
 })());
 check("per-ASIN cap blocked", (() => {
@@ -106,7 +115,7 @@ check("audit entry shape", (() => {
 // 9. Env parsing for caps and kill switch.
 check("capsFromEnv defaults", (() => {
   const c = capsFromEnv({});
-  return c.dailySpendCap === 500 && c.perOrderCap === 250 && c.maxUnitsPerAsin === 20;
+  return c.dailySpendCap === 2500 && c.perOrderCap === 1000 && c.maxUnitsPerAsin === 20;
 })());
 check("capsFromEnv overrides", (() => {
   const c = capsFromEnv({ NEXARB_DAILY_SPEND_CAP: "1000", NEXARB_PER_ORDER_CAP: "100", NEXARB_MAX_UNITS_PER_ASIN: "5" });
