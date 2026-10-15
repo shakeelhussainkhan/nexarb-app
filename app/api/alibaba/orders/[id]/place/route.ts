@@ -20,7 +20,8 @@ import {
 // POST /api/alibaba/orders/[id]/place  (session only)
 //
 // The ONLY placement path in the platform, and it is gated twice:
-//   1. the order state machine (must be approved / ready_to_place), and
+//   1. the order state machine (must be approved / ready_to_place, or
+//      failed before anything was created on Alibaba — a retry), and
 //   2. the linked purchase intent must be APPROVED — re-read here, never
 //      trusted from the order row or the client.
 // When the Alibaba order APIs are not live-verified (ALIBABA_ORDERS_LIVE
@@ -68,7 +69,12 @@ export async function POST(
   }
 
   const live = ordersLiveFromEnv(process.env);
-  const decision = evaluatePlacement({ orderStatus: order.status, intentStatus, ordersLive: live });
+  const decision = evaluatePlacement({
+    orderStatus: order.status,
+    intentStatus,
+    ordersLive: live,
+    hasAlibabaOrder: Boolean(order.alibabaOrderId),
+  });
   if (!decision.allowed || !decision.outcome) {
     return NextResponse.json(
       { success: false, error: "Order cannot be placed", reasons: decision.reasons },

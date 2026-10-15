@@ -102,22 +102,47 @@ check("sm: pending_approval -> awaiting_payment FORBIDDEN", canTransitionOrder("
 check("sm: delivered is terminal", validNextOrderStatuses("delivered").length === 0);
 check("sm: cancelled is terminal", validNextOrderStatuses("cancelled").length === 0);
 check("sm: pending_approval can fall back to draft", canTransitionOrder("pending_approval", "draft") === true);
+check("sm: failed -> awaiting_payment allowed (pre-create retry, live)", canTransitionOrder("failed", "awaiting_payment") === true);
+check("sm: failed -> ready_to_place allowed (pre-create retry, flag off)", canTransitionOrder("failed", "ready_to_place") === true);
+check("sm: failed -> placed allowed (retry outcome)", canTransitionOrder("failed", "placed") === true);
+check("sm: failed -> shipped FORBIDDEN (a retry still goes through placement)", canTransitionOrder("failed", "shipped") === false);
+check("sm: failed -> draft still allowed (housekeeping)", canTransitionOrder("failed", "draft") === true);
 
 // --- placement gate: intent must be APPROVED -------------------------------------
-const noIntent = evaluatePlacement({ orderStatus: "approved", intentStatus: null, ordersLive: true });
+const noIntent = evaluatePlacement({ orderStatus: "approved", intentStatus: null, ordersLive: true, hasAlibabaOrder: false });
 check("place: no linked intent -> refused", noIntent.allowed === false && noIntent.reasons.length > 0);
-const pendingIntent = evaluatePlacement({ orderStatus: "approved", intentStatus: "PENDING_APPROVAL", ordersLive: true });
+const pendingIntent = evaluatePlacement({ orderStatus: "approved", intentStatus: "PENDING_APPROVAL", ordersLive: true, hasAlibabaOrder: false });
 check("place: intent still PENDING_APPROVAL -> refused", pendingIntent.allowed === false);
-const rejectedIntent = evaluatePlacement({ orderStatus: "approved", intentStatus: "REJECTED", ordersLive: true });
+const rejectedIntent = evaluatePlacement({ orderStatus: "approved", intentStatus: "REJECTED", ordersLive: true, hasAlibabaOrder: false });
 check("place: intent REJECTED -> refused", rejectedIntent.allowed === false);
-const draftOrderGate = evaluatePlacement({ orderStatus: "draft", intentStatus: "APPROVED", ordersLive: true });
+const draftOrderGate = evaluatePlacement({ orderStatus: "draft", intentStatus: "APPROVED", ordersLive: true, hasAlibabaOrder: false });
 check("place: draft order -> refused even with an approved intent", draftOrderGate.allowed === false);
-const liveOk = evaluatePlacement({ orderStatus: "approved", intentStatus: "APPROVED", ordersLive: true });
+const liveOk = evaluatePlacement({ orderStatus: "approved", intentStatus: "APPROVED", ordersLive: true, hasAlibabaOrder: false });
 check("place: approved + APPROVED + live -> awaiting_payment (created on Alibaba, unpaid)", liveOk.allowed === true && liveOk.outcome === "awaiting_payment");
-const darkOk = evaluatePlacement({ orderStatus: "approved", intentStatus: "APPROVED", ordersLive: false });
+const darkOk = evaluatePlacement({ orderStatus: "approved", intentStatus: "APPROVED", ordersLive: false, hasAlibabaOrder: false });
 check("place: approved + APPROVED + flag off -> ready_to_place (NOT placed)", darkOk.allowed === true && darkOk.outcome === "ready_to_place");
-const retryOk = evaluatePlacement({ orderStatus: "ready_to_place", intentStatus: "APPROVED", ordersLive: true });
+const retryOk = evaluatePlacement({ orderStatus: "ready_to_place", intentStatus: "APPROVED", ordersLive: true, hasAlibabaOrder: false });
 check("place: ready_to_place retry with live flag -> awaiting_payment", retryOk.allowed === true && retryOk.outcome === "awaiting_payment");
+const approvedWithId = evaluatePlacement({ orderStatus: "approved", intentStatus: "APPROVED", ordersLive: true, hasAlibabaOrder: true });
+check("place: approved order — hasAlibabaOrder does not change the gate", approvedWithId.allowed === true && approvedWithId.outcome === "awaiting_payment");
+
+// --- placement gate: retry after a PRE-CREATE failure ---------------------------
+// A placement that failed before anything was created on Alibaba (e.g. the
+// freight quote errored) records `failed` with alibaba_order_id null — that
+// failure must be retryable. A failed order WITH an Alibaba id was created
+// there and must stay locked, or a retry would duplicate it.
+const failedPreCreateLive = evaluatePlacement({ orderStatus: "failed", intentStatus: "APPROVED", ordersLive: true, hasAlibabaOrder: false });
+check("place: failed + no Alibaba order + live -> allowed, awaiting_payment", failedPreCreateLive.allowed === true && failedPreCreateLive.outcome === "awaiting_payment");
+const failedPreCreateDark = evaluatePlacement({ orderStatus: "failed", intentStatus: "APPROVED", ordersLive: false, hasAlibabaOrder: false });
+check("place: failed + no Alibaba order + flag off -> allowed, ready_to_place", failedPreCreateDark.allowed === true && failedPreCreateDark.outcome === "ready_to_place");
+const failedCreated = evaluatePlacement({ orderStatus: "failed", intentStatus: "APPROVED", ordersLive: true, hasAlibabaOrder: true });
+check(
+  "place: failed WITH an Alibaba order id -> refused (created on Alibaba, cannot place again)",
+  failedCreated.allowed === false && failedCreated.reasons.some((r) => r.includes("already has an Alibaba order id")),
+  JSON.stringify(failedCreated.reasons)
+);
+const failedRetryPendingIntent = evaluatePlacement({ orderStatus: "failed", intentStatus: "PENDING_APPROVAL", ordersLive: true, hasAlibabaOrder: false });
+check("place: failed pre-create retry still requires an APPROVED intent", failedRetryPendingIntent.allowed === false);
 
 // --- caps are consumed from lib/engine/guards (single source), never hardcoded ---
 const defaultCaps = capsFromEnv({});
