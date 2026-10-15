@@ -14,6 +14,7 @@ import {
   type CheckoutStatus,
 } from "@/lib/engine/checkout";
 import { getSupabaseAdmin } from "@/lib/supabase";
+import { ensurePurchaseIntentLot } from "@/lib/inventory/lots";
 
 // POST /api/purchases/[id]/checkout
 // Assisted-checkout queue for APPROVED purchase intents.
@@ -125,6 +126,19 @@ export async function POST(
     }
 
     const updatedIntent = useSupabase ? await getIntentSupabase(id) : sharedMemoryStore.getIntent(id);
+
+    // Money module PR-B: a checkout that just reached "completed" is
+    // an executed purchase — ensure its FIFO inventory lot exists at
+    // the intent's unit price (lib/inventory/lots). "completed" is a
+    // terminal checkout state, so this transition fires once; the
+    // ensure is idempotent regardless. Best-effort — it never throws,
+    // so a lot failure cannot fail the checkout status report. The
+    // in-memory fallback store has no inventory_lots table, so this is
+    // Supabase-only.
+    if (useSupabase && action === "status" && next === "completed" && updatedIntent) {
+      await ensurePurchaseIntentLot(getSupabaseAdmin(), updatedIntent, new Date().toISOString());
+    }
+
     const warning =
       action === "request" && !intent.retailerUrl
         ? "No retailer URL on this intent — the browser will search by ASIN."
