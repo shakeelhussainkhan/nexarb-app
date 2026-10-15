@@ -24,6 +24,7 @@ export type AlibabaOrderStatus =
   | "pending_approval"
   | "approved"
   | "ready_to_place"
+  | "awaiting_payment"
   | "placed"
   | "shipped"
   | "delivered"
@@ -31,14 +32,17 @@ export type AlibabaOrderStatus =
   | "cancelled";
 
 // draft → pending_approval (intent created) → approved (intent approved)
-// approved → ready_to_place (order APIs not live-verified yet) or placed
-// ready_to_place → placed (once the order APIs are live)
+// approved → ready_to_place (order APIs dark) or awaiting_payment (live:
+//   the order exists on Alibaba, created-but-unpaid — payment is completed
+//   by the founder at Alibaba's cashier via the stored pay_url)
+// awaiting_payment → placed (pay result query confirms PAY_SUCCESS)
 // placed → shipped → delivered; failure/cancellation recorded, never hidden.
 const ORDER_TRANSITIONS: Record<AlibabaOrderStatus, AlibabaOrderStatus[]> = {
   draft: ["pending_approval", "cancelled"],
   pending_approval: ["approved", "cancelled", "draft"],
-  approved: ["ready_to_place", "placed", "failed", "cancelled"],
-  ready_to_place: ["placed", "failed", "cancelled"],
+  approved: ["ready_to_place", "awaiting_payment", "placed", "failed", "cancelled"],
+  ready_to_place: ["awaiting_payment", "placed", "failed", "cancelled"],
+  awaiting_payment: ["placed", "shipped", "delivered", "failed", "cancelled"],
   placed: ["shipped", "delivered", "failed", "cancelled"],
   shipped: ["delivered", "failed"],
   delivered: [],
@@ -57,10 +61,10 @@ export function validNextOrderStatuses(from: AlibabaOrderStatus): AlibabaOrderSt
 // --- Live flag -----------------------------------------------------------------
 
 /**
- * Alibaba's order APIs are NOT live-verified (see lib/alibaba/orders.ts —
- * the method names come from the developer docs index, never from a real
- * response). Ordering stays dark until the founder flips this on AND the
- * endpoints have been verified against the live app. Default OFF.
+ * The order API method names were verified in Alibaba's console for this
+ * app on 2026-10-15 (/order/freight/calculate, /buynow/order/create,
+ * /alibaba/order/pay/result/query — see lib/alibaba/orders.ts). Ordering
+ * still stays dark until the founder flips this on. Default OFF.
  */
 export function ordersLiveFromEnv(env: Record<string, string | undefined>): boolean {
   const raw = (env.ALIBABA_ORDERS_LIVE ?? "").trim().toLowerCase();
@@ -175,9 +179,11 @@ export type IntentStatusForOrder = "PENDING_APPROVAL" | "APPROVED" | "REJECTED" 
 
 export interface PlaceDecision {
   allowed: boolean;
-  /** Where an allowed placement lands: a live API order, or the honest
-   * ready_to_place holding state while the order APIs are unverified. */
-  outcome: "placed" | "ready_to_place" | null;
+  /** Where an allowed placement lands: live → `awaiting_payment` (the
+   * order is created on Alibaba but UNPAID — there is no headless API
+   * payment; the founder pays at Alibaba's cashier via the pay_url), or
+   * the honest ready_to_place holding state while the flag is off. */
+  outcome: "awaiting_payment" | "ready_to_place" | null;
   reasons: string[];
 }
 
@@ -202,7 +208,248 @@ export function evaluatePlacement(input: {
     reasons.push(`Purchase intent is ${input.intentStatus} — placement requires APPROVED. Nothing is ordered without the founder's approval of the intent.`);
   }
   if (reasons.length > 0) return { allowed: false, outcome: null, reasons };
-  return { allowed: true, outcome: input.ordersLive ? "placed" : "ready_to_place", reasons: [] };
+  return { allowed: true, outcome: input.ordersLive ? "awaiting_payment" : "ready_to_place", reasons: [] };
+}
+
+// --- Placement payloads (console-verified API shapes, 2026-10-15) ----------------------
+//
+// The order APIs document FLAT business params (unlike search's `param0`
+// and description's `query_req` wrappers): /order/freight/calculate takes
+// e_company_id + destination_country + logistics_product_list;
+// /buynow/order/create takes channel_refer_id + logistics_detail +
+// product_list and returns value.trade_id + value.pay_url. Payment is
+// completed by the buyer in a browser at that pay_url — the dropshipping
+// pay API only hands back the cashier URL — so placement ENDS at
+// created-unpaid (`awaiting_payment`) and /alibaba/order/pay/result/query
+// is how sync learns the outcome. Builders/parsers are pure so the
+// harness pins every shape.
+
+function asRec(v: unknown): Record<string, unknown> | null {
+  return v !== null && typeof v === "object" && !Array.isArray(v)
+    ? (v as Record<string, unknown>)
+    : null;
+}
+
+function asStr(v: unknown): string {
+  if (typeof v === "string") return v.trim();
+  if (typeof v === "number" && Number.isFinite(v)) return String(v);
+  return "";
+}
+
+function asNum(v: unknown): number | null {
+  const n = typeof v === "string" ? Number(v) : typeof v === "number" ? v : NaN;
+  return Number.isFinite(n) ? n : null;
+}
+
+/** Alibaba ids travel as JSON numbers when the id is fully numeric. */
+function productIdValue(productId: string): number | string {
+  return /^\d+$/.test(productId) ? Number(productId) : productId;
+}
+
+/** First record, among the usual IOP nesting spots, that carries one of
+ * `keys` — response envelopes vary (result/value/data), values don't. */
+function findRecordWith(raw: unknown, keys: string[]): Record<string, unknown> | null {
+  const root = asRec(raw);
+  if (!root) return null;
+  const result = asRec(root.result);
+  const data = asRec(root.data);
+  const candidates: Array<Record<string, unknown> | null> = [
+    root,
+    asRec(root.value),
+    result,
+    result ? asRec(result.value) : null,
+    result ? asRec(result.result_data) : null,
+    data,
+    data ? asRec(data.value) : null,
+  ];
+  for (const c of candidates) {
+    if (c && keys.some((k) => c[k] !== undefined && c[k] !== null)) return c;
+  }
+  return null;
+}
+
+/** First array among the usual IOP nesting spots (freight returns value[]). */
+function findArray(raw: unknown): unknown[] | null {
+  if (Array.isArray(raw)) return raw;
+  const root = asRec(raw);
+  if (!root) return null;
+  const result = asRec(root.result);
+  const data = asRec(root.data);
+  const candidates: unknown[] = [
+    root.value,
+    root.result,
+    root.data,
+    result?.value,
+    result?.result_data,
+    data?.value,
+  ];
+  for (const c of candidates) if (Array.isArray(c)) return c;
+  return null;
+}
+
+export interface FreightRequest {
+  e_company_id: string;
+  destination_country: string;
+  logistics_product_list: Array<Record<string, unknown>>;
+}
+
+/** Body for /order/freight/calculate ("Advanced Freight Cost Calculation"). */
+export function buildFreightRequest(input: {
+  eCompanyId: string;
+  productId: string;
+  skuId: string | null;
+  qty: number;
+}): FreightRequest {
+  const line: Record<string, unknown> = { product_id: productIdValue(input.productId) };
+  if (input.skuId) line.sku_id = input.skuId;
+  line.quantity = input.qty;
+  return {
+    e_company_id: input.eCompanyId,
+    destination_country: "US",
+    logistics_product_list: [line],
+  };
+}
+
+export interface FreightSolution {
+  /** vendor_code — becomes logistics_detail.carrier_code at create. */
+  carrierCode: string;
+  freightFee: number;
+  currency: string | null;
+  deliveryTime: string | null;
+  vendorName: string | null;
+  raw: unknown;
+}
+
+/** Cheapest usable solution from a freight response; null when the
+ * response carries no solution with a vendor_code and a numeric fee. */
+export function pickFreightSolution(rawResponse: unknown): FreightSolution | null {
+  const list = findArray(rawResponse);
+  if (!list) return null;
+  let best: FreightSolution | null = null;
+  for (const entry of list) {
+    const rec = asRec(entry);
+    if (!rec) continue;
+    const carrierCode = asStr(rec.vendor_code ?? rec.vendorCode);
+    const fee = asRec(rec.fee);
+    const amount = asNum(fee?.amount ?? rec.fee_amount ?? rec.amount);
+    if (!carrierCode || amount === null || amount < 0) continue;
+    const solution: FreightSolution = {
+      carrierCode,
+      freightFee: Math.round(amount * 100) / 100,
+      currency: (fee ? asStr(fee.currency) : "") || asStr(rec.currency) || null,
+      deliveryTime: asStr(rec.delivery_time ?? rec.deliveryTime) || null,
+      vendorName: asStr(rec.vendor_name ?? rec.vendorName) || null,
+      raw: entry,
+    };
+    if (!best || solution.freightFee < best.freightFee) best = solution;
+  }
+  return best;
+}
+
+export interface FreightGuardResult {
+  allowed: boolean;
+  reasons: string[];
+}
+
+/**
+ * The real freight quote may not silently reprice an approved order:
+ * product (recomputed) + freight must stay within +10% of the total the
+ * founder approved AND within the per-order guardrail cap (supplied by
+ * the caller from lib/engine/guards capsFromEnv — never hardcoded here).
+ */
+export function freightGuard(input: {
+  productTotal: number;
+  freightFee: number;
+  approvedTotal: number;
+  perOrderCap: number;
+}): FreightGuardResult {
+  const reasons: string[] = [];
+  const total = Math.round((input.productTotal + input.freightFee) * 100) / 100;
+  const approvalLimit = Math.round(input.approvedTotal * 1.1 * 100) / 100;
+  if (total > approvalLimit) {
+    reasons.push(
+      `Product $${input.productTotal.toFixed(2)} + freight $${input.freightFee.toFixed(2)} = $${total.toFixed(2)} exceeds the approved total $${input.approvedTotal.toFixed(2)} by more than 10% (limit $${approvalLimit.toFixed(2)}).`
+    );
+  }
+  if (total > input.perOrderCap) {
+    reasons.push(
+      `Product $${input.productTotal.toFixed(2)} + freight $${input.freightFee.toFixed(2)} = $${total.toFixed(2)} exceeds the per-order cap of $${input.perOrderCap.toFixed(2)}.`
+    );
+  }
+  return { allowed: reasons.length === 0, reasons };
+}
+
+/** Five S's import receiving address — the Automated 3PL warehouse that
+ * is already the FBA ship-from in Seller Central. */
+export const IMPORT_SHIP_TO = {
+  address: "120 Tolland Street, Unit D",
+  city: "East Hartford",
+  contact_person: "Radu Daha",
+  country: "United States",
+  country_code: "US",
+  zip: "06108",
+} as const;
+
+export interface CreateOrderRequest {
+  channel_refer_id: string;
+  logistics_detail: {
+    carrier_code: string;
+    dispatch_location: string;
+    shipment_address: typeof IMPORT_SHIP_TO;
+  };
+  product_list: Array<Record<string, unknown>>;
+}
+
+/** Body for /buynow/order/create. channel_refer_id is OUR order ref —
+ * Alibaba echoes it back, which is how a created order reconciles. */
+export function buildCreateRequest(input: {
+  ref: string;
+  carrierCode: string;
+  productId: string;
+  skuId: string | null;
+  qty: number;
+}): CreateOrderRequest {
+  const line: Record<string, unknown> = { product_id: productIdValue(input.productId) };
+  line.quantity = input.qty;
+  if (input.skuId) line.sku_id = input.skuId;
+  return {
+    channel_refer_id: input.ref,
+    logistics_detail: {
+      carrier_code: input.carrierCode,
+      dispatch_location: "CN",
+      shipment_address: IMPORT_SHIP_TO,
+    },
+    product_list: [line],
+  };
+}
+
+/** value.trade_id (Alibaba order number) + value.pay_url from a create
+ * response; both null when absent (a create without a trade_id is NOT an
+ * order — the caller treats it as not created). */
+export function parseCreateResponse(raw: unknown): { tradeId: string | null; payUrl: string | null } {
+  const rec = findRecordWith(raw, ["trade_id", "tradeId", "pay_url", "payUrl"]);
+  if (!rec) return { tradeId: null, payUrl: null };
+  const tid = rec.trade_id ?? rec.tradeId;
+  return {
+    tradeId: tid !== undefined && tid !== null && asStr(tid) ? asStr(tid) : null,
+    payUrl: asStr(rec.pay_url ?? rec.payUrl) || null,
+  };
+}
+
+/** /alibaba/order/pay/result/query response: paid only on PAY_SUCCESS. */
+export function parsePayResult(raw: unknown): {
+  status: string | null;
+  paid: boolean;
+  payUrl: string | null;
+} {
+  const rec = findRecordWith(raw, ["status", "pay_url", "payUrl"]);
+  if (!rec) return { status: null, paid: false, payUrl: null };
+  const status = asStr(rec.status) || null;
+  return {
+    status,
+    paid: status === "PAY_SUCCESS",
+    payUrl: asStr(rec.pay_url ?? rec.payUrl) || null,
+  };
 }
 
 // --- Status mapping from Alibaba payloads ----------------------------------------------
