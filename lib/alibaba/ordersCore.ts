@@ -37,6 +37,10 @@ export type AlibabaOrderStatus =
 //   by the founder at Alibaba's cashier via the stored pay_url)
 // awaiting_payment → placed (pay result query confirms PAY_SUCCESS)
 // placed → shipped → delivered; failure/cancellation recorded, never hidden.
+// failed → retry outcomes (ready_to_place / awaiting_payment / placed) —
+//   reachable in practice only when nothing was ever created on Alibaba:
+//   evaluatePlacement refuses a failed order that carries an Alibaba
+//   order id, so these transitions can never duplicate a created order.
 const ORDER_TRANSITIONS: Record<AlibabaOrderStatus, AlibabaOrderStatus[]> = {
   draft: ["pending_approval", "cancelled"],
   pending_approval: ["approved", "cancelled", "draft"],
@@ -46,7 +50,7 @@ const ORDER_TRANSITIONS: Record<AlibabaOrderStatus, AlibabaOrderStatus[]> = {
   placed: ["shipped", "delivered", "failed", "cancelled"],
   shipped: ["delivered", "failed"],
   delivered: [],
-  failed: ["draft", "cancelled"],
+  failed: ["awaiting_payment", "ready_to_place", "placed", "draft", "cancelled"],
   cancelled: [],
 };
 
@@ -189,7 +193,11 @@ export interface PlaceDecision {
 
 /**
  * The ONLY placement decision used by the place route. Placement requires:
- *  - the order itself is in `approved` (or `ready_to_place` on a retry), and
+ *  - the order itself is in `approved` (or `ready_to_place` on a retry),
+ *    or in `failed` with NO Alibaba order id — a pre-create failure (e.g.
+ *    the freight quote errored) left nothing on Alibaba, so the placement
+ *    may be retried; a `failed` order WITH an Alibaba order id WAS
+ *    created there and is refused, so a retry can never duplicate it, and
  *  - the linked purchase intent exists and is APPROVED.
  * Anything else refuses with the full list of blockers.
  */
@@ -197,9 +205,16 @@ export function evaluatePlacement(input: {
   orderStatus: AlibabaOrderStatus;
   intentStatus: IntentStatusForOrder;
   ordersLive: boolean;
+  /** True when the order already carries an Alibaba order id. Only
+   * consulted for `failed` orders: it is what separates a retryable
+   * pre-create failure from a created-on-Alibaba order. */
+  hasAlibabaOrder: boolean;
 }): PlaceDecision {
   const reasons: string[] = [];
-  if (input.orderStatus !== "approved" && input.orderStatus !== "ready_to_place") {
+  const retryableFailure = input.orderStatus === "failed" && !input.hasAlibabaOrder;
+  if (input.orderStatus === "failed" && input.hasAlibabaOrder) {
+    reasons.push("This order already has an Alibaba order id — it was created on Alibaba and cannot be placed again.");
+  } else if (input.orderStatus !== "approved" && input.orderStatus !== "ready_to_place" && !retryableFailure) {
     reasons.push(`Order is ${input.orderStatus} — placement requires an approved order.`);
   }
   if (!input.intentStatus) {
