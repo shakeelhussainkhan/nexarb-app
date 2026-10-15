@@ -41,6 +41,20 @@ interface DealsStats {
   channelBreakdown: { amazon: number; walmart: number; alibaba: number };
 }
 
+// Minimal shapes from GET /api/purchases and GET /api/alibaba/orders —
+// only the fields the stat cards aggregate.
+interface PurchaseIntentSummary {
+  id: string;
+  qty: number;
+  unitPrice: number;
+  status: "PENDING_APPROVAL" | "APPROVED" | "EXECUTED" | "REJECTED";
+}
+
+interface AlibabaOrderSummary {
+  status: string;
+  orderTotal: number;
+}
+
 interface ActivityEvent {
   id: number;
   type: "routing_decision" | "product_rejected" | "alibaba_forward" | "scan_start" | "unknown";
@@ -110,6 +124,8 @@ export default function DashboardClient() {
   // Data state
   const [deals, setDeals] = useState<Deal[]>([]);
   const [stats, setStats] = useState<DealsStats | null>(null);
+  const [purchaseIntents, setPurchaseIntents] = useState<PurchaseIntentSummary[]>([]);
+  const [alibabaOrders, setAlibabaOrders] = useState<AlibabaOrderSummary[]>([]);
   const [activity, setActivity] = useState<ActivityEvent[]>([]);
   const [serverOnline, setServerOnline] = useState<boolean | null>(null);
   const [dealsLoading, setDealsLoading] = useState(true);
@@ -175,6 +191,28 @@ export default function DashboardClient() {
     finally { setStatsLoading(false); }
   }, []);
 
+  // Purchase intents — feeds the Pending Purchases card so it reflects
+  // real intent state (pending approvals + approved committed spend),
+  // not just the deals pipeline.
+  const fetchPurchases = useCallback(async () => {
+    try {
+      const res = await fetch("/api/purchases");
+      if (!res.ok) throw new Error("failed");
+      const data = (await res.json()) as { intents?: PurchaseIntentSummary[] };
+      setPurchaseIntents(Array.isArray(data.intents) ? data.intents : []);
+    } catch { /* keep previous intents */ }
+  }, []);
+
+  // Alibaba orders — feeds the Imports In Flight card.
+  const fetchAlibabaOrders = useCallback(async () => {
+    try {
+      const res = await fetch("/api/alibaba/orders");
+      if (!res.ok) throw new Error("failed");
+      const data = (await res.json()) as { orders?: AlibabaOrderSummary[] };
+      setAlibabaOrders(Array.isArray(data.orders) ? data.orders : []);
+    } catch { /* keep previous orders */ }
+  }, []);
+
   const checkHealth = useCallback(async () => {
     try {
       const res = await fetch("/api/health");
@@ -232,6 +270,8 @@ export default function DashboardClient() {
     const init = async () => {
       await fetchDeals();
       await fetchStats();
+      fetchPurchases();
+      fetchAlibabaOrders();
       checkHealth();
     };
     init().then(() => {
@@ -241,6 +281,8 @@ export default function DashboardClient() {
     const dealsInterval = setInterval(async () => {
       await fetchDeals();
       await fetchStats();
+      fetchPurchases();
+      fetchAlibabaOrders();
     }, 5 * 60 * 1000);
     const healthInterval = setInterval(checkHealth, 60 * 1000);
     const activityInterval = setInterval(() => fetchActivity(), 30 * 1000);
@@ -254,7 +296,7 @@ export default function DashboardClient() {
       clearInterval(tickInterval);
       clearInterval(countdownInterval);
     };
-  }, [fetchDeals, fetchStats, checkHealth, fetchActivity]);
+  }, [fetchDeals, fetchStats, checkHealth, fetchActivity, fetchPurchases, fetchAlibabaOrders]);
 
   // Update mock activity when deals load
   useEffect(() => {
@@ -275,11 +317,13 @@ export default function DashboardClient() {
         e.preventDefault();
         fetchDeals();
         fetchStats();
+        fetchPurchases();
+        fetchAlibabaOrders();
       }
     }
     window.addEventListener("keydown", handleKey);
     return () => window.removeEventListener("keydown", handleKey);
-  }, [fetchDeals, fetchStats]);
+  }, [fetchDeals, fetchStats, fetchPurchases, fetchAlibabaOrders]);
 
   // ── Toast helper ─────────────────────────────────────────────────────────────
 
@@ -443,7 +487,33 @@ export default function DashboardClient() {
 
   // ── Stat cards ───────────────────────────────────────────────────────────────
 
-  const pendingInvestment = filteredDeals.filter((d) => !bought.has(d.asin)).reduce((s, d) => s + d.buyPrice, 0);
+  // Purchases card inputs — from real purchase intents, not the deals
+  // pipeline: pending approvals awaiting a decision, plus the money
+  // already committed by APPROVED intents (qty × unit price).
+  const pendingApprovals = purchaseIntents.filter((i) => i.status === "PENDING_APPROVAL").length;
+  const committedSpend = purchaseIntents
+    .filter((i) => i.status === "APPROVED")
+    .reduce((s, i) => s + i.qty * i.unitPrice, 0);
+
+  // Imports card inputs — Alibaba orders in flight: created on Alibaba
+  // and not yet delivered (awaiting payment, placed, or shipped).
+  const IN_FLIGHT_STATUSES: Array<{ status: string; label: string }> = [
+    { status: "awaiting_payment", label: "awaiting payment" },
+    { status: "placed", label: "placed" },
+    { status: "shipped", label: "shipped" },
+  ];
+  const inFlightOrders = alibabaOrders.filter((o) =>
+    IN_FLIGHT_STATUSES.some((f) => f.status === o.status)
+  );
+  const inFlightTotal = inFlightOrders.reduce((s, o) => s + (o.orderTotal ?? 0), 0);
+  const inFlightBreakdown = IN_FLIGHT_STATUSES.map((f) => ({
+    label: f.label,
+    n: alibabaOrders.filter((o) => o.status === f.status).length,
+  }))
+    .filter((f) => f.n > 0)
+    .map((f) => `${f.n} ${f.label}`)
+    .join(" · ");
+
   const statCards = [
     {
       label: "Deals Today",
@@ -454,10 +524,20 @@ export default function DashboardClient() {
     },
     {
       label: "Pending Purchases",
-      value: statsLoading ? "…" : String(stats?.pendingCount ?? 0),
-      sub: `$${pendingInvestment.toLocaleString("en-US", { maximumFractionDigits: 0 })} investment`,
+      value: String(pendingApprovals),
+      sub: `$${committedSpend.toLocaleString("en-US", { maximumFractionDigits: 0 })} committed (approved)`,
       up: null,
       icon: "⏳",
+    },
+    {
+      label: "Imports In Flight",
+      value: String(inFlightOrders.length),
+      sub:
+        inFlightOrders.length === 0
+          ? "No Alibaba orders in flight"
+          : `${inFlightBreakdown} · $${inFlightTotal.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
+      up: null,
+      icon: "🚢",
     },
     {
       label: "Avg Verified Margin",
@@ -641,7 +721,7 @@ export default function DashboardClient() {
       )}
 
       {/* Stats */}
-      <div className="grid grid-cols-2 xl:grid-cols-4 gap-4 mb-8">
+      <div className="grid grid-cols-2 xl:grid-cols-5 gap-4 mb-8">
         {statCards.map((s) => (
           <div
             key={s.label}

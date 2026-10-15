@@ -79,6 +79,14 @@ export default function PurchasesPage() {
     }
   }
 
+  // Reject is reachable from both PENDING_APPROVAL and APPROVED (the
+  // approve route + guards state machine allow it) — confirm first,
+  // since an approved intent may already have money committed against it.
+  function confirmDecide(id: string, decision: "approve" | "reject") {
+    if (decision === "reject" && !window.confirm("Reject this purchase intent?")) return;
+    decide(id, decision);
+  }
+
   async function requestCheckout(id: string) {
     setBusy(id + "checkout");
     try {
@@ -195,13 +203,24 @@ export default function PurchasesPage() {
                               </button>
                               <button
                                 disabled={busy === it.id + "reject"}
-                                onClick={() => decide(it.id, "reject")}
+                                onClick={() => confirmDecide(it.id, "reject")}
                                 className="px-3 py-1.5 rounded-lg text-xs font-semibold border transition hover:bg-gray-50 disabled:opacity-50"
                                 style={{ color: "#991B1B", borderColor: "#FECACA" }}
                               >
                                 Reject
                               </button>
                             </>
+                          )}
+                          {it.status === "APPROVED" && (
+                            <button
+                              disabled={busy === it.id + "reject"}
+                              onClick={() => confirmDecide(it.id, "reject")}
+                              className="px-3 py-1.5 rounded-lg text-xs font-semibold border transition hover:bg-gray-50 disabled:opacity-50"
+                              style={{ color: "#991B1B", borderColor: "#FECACA" }}
+                              title="Reject this approved intent before it is executed."
+                            >
+                              Reject
+                            </button>
                           )}
                           {canCheckout && (
                             <button
