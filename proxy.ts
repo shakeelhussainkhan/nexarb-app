@@ -28,6 +28,11 @@ const isPublicRoute = createRouteMatcher([
 //                                 decisions on the brand-approval queue)
 //   /api/sourcing/alibaba       — resolveUser (key or session)
 //   /api/alibaba/status         — resolveUser (connection status booleans)
+//   /api/alibaba/orders         — GET resolveUser; POST session-only (draft)
+//   /api/alibaba/orders/[id]    — GET resolveUser (detail + status sync)
+//                                 ([id]/intent and [id]/place are NOT
+//                                 bypassed: session-gated here AND in the
+//                                 handlers, like purchases/[id]/approve)
 //   /api/compliance/screen      — resolveUser (pure screening computation)
 //   /api/compliance/overview    — resolveUser (read-only summary)
 //   /api/compliance/shipments   — GET resolveUser; POST session-only
@@ -57,6 +62,8 @@ const API_KEY_PATH_RES: RegExp[] = [
   /^\/api\/purchases\/[^/]+\/checkout(\/.*)?$/,
   /^\/api\/approvals$/,
   /^\/api\/alibaba\/status$/,
+  /^\/api\/alibaba\/orders$/,
+  /^\/api\/alibaba\/orders\/[^/]+$/,
   /^\/api\/compliance\/screen$/,
   /^\/api\/compliance\/overview$/,
   /^\/api\/compliance\/shipments$/,
