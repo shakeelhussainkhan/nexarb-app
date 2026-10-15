@@ -40,6 +40,7 @@ import {
   estimateDuties,
   type ScreeningResult,
 } from "@/lib/compliance/core";
+import { ensureAlibabaOrderLot } from "@/lib/inventory/lots";
 
 type Admin = ReturnType<typeof getSupabaseAdmin>;
 
@@ -238,6 +239,12 @@ export async function reconcileIntentState(
   userId: string,
   order: AlibabaOrderRecord
 ): Promise<AlibabaOrderRecord> {
+  // Money module PR-B backstop: a delivered order must have its FIFO
+  // inventory lot (lib/inventory/lots). This runs on every order read,
+  // so a status flipped by hand (SQL) gets its lot on the next read
+  // even though the sync transition path never fired. Best-effort —
+  // ensureAlibabaOrderLot never throws.
+  if (order.status === "delivered") await ensureAlibabaOrderLot(admin, order);
   if (!order.purchaseIntentId) return order;
   if (order.status !== "pending_approval" && order.status !== "approved") return order;
   const { data } = await admin
@@ -570,7 +577,12 @@ export async function syncAlibabaOrderStatus(
   env: NodeJS.ProcessEnv = process.env
 ): Promise<AlibabaOrderRecord> {
   if (!ordersLiveFromEnv(env) || !order.alibabaOrderId) return order;
-  if (order.status === "delivered" || order.status === "cancelled") return order;
+  if (order.status === "delivered" || order.status === "cancelled") {
+    // Already delivered: no status left to sync, but its FIFO lot must
+    // exist (Money module PR-B) — a previous attempt may have failed.
+    if (order.status === "delivered") await ensureAlibabaOrderLot(admin, order);
+    return order;
+  }
   const authRes = await getValidAlibabaToken(admin, userId, env);
   if (!authRes.ok || !authRes.token || !authRes.cfg) {
     return recordSyncAttempt(
@@ -654,5 +666,10 @@ export async function syncAlibabaOrderStatus(
   ]
     .filter(Boolean)
     .join("; ");
-  return recordSyncAttempt(admin, userId, current, buildSyncAttempt("done", true, detail));
+  const synced = await recordSyncAttempt(admin, userId, current, buildSyncAttempt("done", true, detail));
+  // Money module PR-B: if this sync moved the order to delivered, its
+  // FIFO inventory lot is created now, at landed cost (order total
+  // already includes freight; wave-1 DDP puts duty inside it too).
+  if (synced.status === "delivered") await ensureAlibabaOrderLot(admin, synced);
+  return synced;
 }
