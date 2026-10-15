@@ -4,24 +4,31 @@
 // record creation that accompanies placement, status sync, and the
 // Alibaba order API calls themselves.
 //
-// ⚠️ UNVERIFIED ORDER APIs: the method names below come from Alibaba's
-// developer-docs index (findings doc, 2026-10-13): /buynow/order/create,
-// /alibaba/dropshipping/order/pay, /alibaba/order/get|list|cancel and a
-// freight-calculate endpoint. Unlike search/description, NONE of them has
-// ever returned a real response to this app — exact business-parameter
-// names/shapes are NOT verified. Every call therefore sits behind the
-// ALIBABA_ORDERS_LIVE env flag (default OFF, lib/alibaba/ordersCore.ts):
-// with the flag off, an approved order moves to `ready_to_place` and NO
-// order call is attempted. When the flag is on, all order traffic goes
-// through the single orderApiCall() below so verification/fixes land in
-// exactly one place.
+// ORDER APIs — method names + parameter shapes verified in Alibaba's
+// console for this app on 2026-10-15 (the docs-index freight path used
+// before, /alibaba/dropshipping/freight/calculate, does not exist — the
+// first live Place attempt failed on exactly that): freight is
+// /order/freight/calculate, create is /buynow/order/create, and payment
+// state is read from /alibaba/order/pay/result/query. There is NO
+// headless API payment: create returns a cashier pay_url and the founder
+// pays in a browser, so a live placement ends at `awaiting_payment`.
+// Every call still sits behind the ALIBABA_ORDERS_LIVE env flag (default
+// OFF, lib/alibaba/ordersCore.ts): with the flag off, an approved order
+// moves to `ready_to_place` and NO order call is attempted. With the flag
+// on, all order traffic goes through the single orderApiCall() below.
 
 import { getSupabaseAdmin } from "@/lib/supabase";
 import type { AlibabaConfig } from "./core";
-import { callAlibabaApi, getValidAlibabaToken } from "./client";
+import { callAlibabaApi, getAlibabaProduct, getValidAlibabaToken } from "./client";
 import {
+  buildCreateRequest,
+  buildFreightRequest,
+  freightGuard,
   mapAlibabaOrderStatus,
   ordersLiveFromEnv,
+  parseCreateResponse,
+  parsePayResult,
+  pickFreightSolution,
   type AlibabaOrderStatus,
 } from "./ordersCore";
 import {
@@ -62,10 +69,20 @@ export interface AlibabaOrderRecord {
   shipmentId: string | null;
   productComplianceId: string | null;
   alibabaStatusRaw: unknown;
+  /** Alibaba cashier URL for a created-but-unpaid order, derived from
+   * alibaba_status_raw (no separate column — the raw payload is the
+   * source of truth). Null unless the order is awaiting payment. */
+  payUrl: string | null;
   placedAt: string | null;
   lastSyncedAt: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+function payUrlFromRaw(raw: unknown): string | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const v = (raw as Record<string, unknown>).payUrl;
+  return typeof v === "string" && v ? v : null;
 }
 
 function rowToOrder(row: Record<string, unknown>): AlibabaOrderRecord {
@@ -98,6 +115,7 @@ function rowToOrder(row: Record<string, unknown>): AlibabaOrderRecord {
     shipmentId: row.shipment_id ? String(row.shipment_id) : null,
     productComplianceId: row.product_compliance_id ? String(row.product_compliance_id) : null,
     alibabaStatusRaw: row.alibaba_status_raw ?? null,
+    payUrl: payUrlFromRaw(row.alibaba_status_raw),
     placedAt: row.placed_at ? String(row.placed_at) : null,
     lastSyncedAt: row.last_synced_at ? String(row.last_synced_at) : null,
     createdAt: String(row.created_at),
@@ -307,23 +325,28 @@ export async function ensureComplianceRecords(
   return { shipmentId, productComplianceId, errors };
 }
 
-// --- Alibaba order API calls (UNVERIFIED — flag-gated) --------------------------
+// --- Alibaba order API calls (console-verified 2026-10-15 — flag-gated) ---------
 
 const ORDER_METHODS = {
-  // Price/freight confirmation before creating (docs: "freight calculate").
-  freightCalculate: "/alibaba/dropshipping/freight/calculate",
+  // "Advanced Freight Cost Calculation" — the docs-index path used before
+  // (/alibaba/dropshipping/freight/calculate) does not exist.
+  freightCalculate: "/order/freight/calculate",
   create: "/buynow/order/create",
-  pay: "/alibaba/dropshipping/order/pay",
+  // Payment is completed by the buyer at Alibaba's cashier (create returns
+  // a pay_url); this query is how sync learns the payment outcome.
+  payResultQuery: "/alibaba/order/pay/result/query",
   get: "/alibaba/order/get",
   list: "/alibaba/order/list",
   cancel: "/alibaba/order/cancel",
 } as const;
 
 /**
- * THE single place every Alibaba order call goes through. Business params
- * ride in a `param0` JSON wrapper (the pattern the verified sourcing APIs
- * use for search); whether the order APIs accept that wrapper is part of
- * what live verification must establish.
+ * THE single place every Alibaba order call goes through. The order APIs
+ * document FLAT business params — each payload key travels as its own
+ * parameter, with object/array values JSON-stringified — unlike the
+ * sourcing APIs (search wraps in `param0`, description in `query_req`).
+ * Flat is the documented shape for these APIs; the first live calls
+ * confirm it, and any fix lands here alone.
  */
 async function orderApiCall(
   cfg: AlibabaConfig,
@@ -331,65 +354,109 @@ async function orderApiCall(
   method: string,
   payload: Record<string, unknown>
 ): Promise<{ ok: boolean; data?: unknown; error?: string }> {
-  return callAlibabaApi(cfg, accessToken, method, { param0: JSON.stringify(payload) }, "POST");
+  const params: Record<string, string> = {};
+  for (const [key, value] of Object.entries(payload)) {
+    if (value === undefined || value === null) continue;
+    params[key] =
+      typeof value === "string" ? value : typeof value === "object" ? JSON.stringify(value) : String(value);
+  }
+  return callAlibabaApi(cfg, accessToken, method, params, "POST");
 }
 
 export interface PlaceResult {
   ok: boolean;
   alibabaOrderId?: string;
+  /** Cashier URL from the create response — the founder pays there. */
+  payUrl?: string;
+  freightFee?: number;
+  carrierCode?: string;
   raw?: unknown;
   error?: string;
 }
 
-/** Preview (freight/price confirmation) → create → pay. Stops at the first
- * failure and reports which step failed; a created-but-unpaid order id is
- * still returned so it can be recorded, never silently dropped. */
+/**
+ * Freight quote → price guard → create. Ends at created-but-UNPAID: the
+ * create response's pay_url is returned for the founder to pay at
+ * Alibaba's cashier (no headless payment exists). Stops at the first
+ * failure and reports which step failed; nothing is created before the
+ * freight guard passes, so an order is never repriced silently.
+ */
 export async function placeAlibabaOrder(
   cfg: AlibabaConfig,
   accessToken: string,
-  order: AlibabaOrderRecord
+  order: AlibabaOrderRecord,
+  perOrderCap: number
 ): Promise<PlaceResult> {
-  const line = {
-    product_id: order.alibabaProductId,
-    sku_id: order.skuId,
-    quantity: order.qty,
-  };
-  const preview = await orderApiCall(cfg, accessToken, ORDER_METHODS.freightCalculate, {
-    items: [line],
-    ship_to_country: "US",
-    currency: order.currency,
+  // The freight API needs the supplier's (encrypted) company id, which
+  // only the product description carries — fetch it live.
+  const detailRes = await getAlibabaProduct(cfg, accessToken, order.alibabaProductId);
+  if (!detailRes.ok || !detailRes.detail) {
+    return { ok: false, error: `product description fetch failed: ${detailRes.error ?? "unknown error"}`, raw: detailRes.raw };
+  }
+  const eCompanyId = detailRes.detail.eCompanyId;
+  if (!eCompanyId) {
+    return { ok: false, error: "supplier company id (e_company_id) unavailable from product description", raw: detailRes.raw };
+  }
+
+  const freight = await orderApiCall(cfg, accessToken, ORDER_METHODS.freightCalculate, {
+    ...buildFreightRequest({ eCompanyId, productId: order.alibabaProductId, skuId: order.skuId, qty: order.qty }),
   });
-  if (!preview.ok) return { ok: false, error: `preview (freight calculate) failed: ${preview.error}`, raw: preview.data };
+  if (!freight.ok) return { ok: false, error: `freight calculate failed: ${freight.error}`, raw: freight.data };
+  const solution = pickFreightSolution(freight.data);
+  if (!solution) {
+    return { ok: false, error: "freight calculate returned no usable shipping solution", raw: freight.data };
+  }
+
+  // Recompute the product total from qty × unit price — never trust a
+  // stored total for a money decision.
+  const productTotal = Math.round(order.qty * order.unitPrice * 100) / 100;
+  const guard = freightGuard({
+    productTotal,
+    freightFee: solution.freightFee,
+    approvedTotal: order.orderTotal,
+    perOrderCap,
+  });
+  if (!guard.allowed) {
+    return { ok: false, error: `freight guard refused placement: ${guard.reasons.join(" ")}`, raw: freight.data };
+  }
 
   const created = await orderApiCall(cfg, accessToken, ORDER_METHODS.create, {
-    items: [line],
-    ship_to_country: "US",
-    currency: order.currency,
-    total_amount: order.orderTotal,
-    out_order_id: order.ref,
+    ...buildCreateRequest({
+      ref: order.ref,
+      carrierCode: solution.carrierCode,
+      productId: order.alibabaProductId,
+      skuId: order.skuId,
+      qty: order.qty,
+    }),
   });
   if (!created.ok) return { ok: false, error: `order create failed: ${created.error}`, raw: created.data };
-  const createdRec = (created.data ?? {}) as Record<string, unknown>;
-  const resultRec = (createdRec.result as Record<string, unknown> | undefined) ?? createdRec;
-  const alibabaOrderId =
-    typeof resultRec.order_id === "string"
-      ? resultRec.order_id
-      : typeof resultRec.orderId === "string"
-        ? resultRec.orderId
-        : undefined;
-  if (!alibabaOrderId) {
-    return { ok: false, error: "order create returned no order id — treating as not placed", raw: created.data };
+  const parsed = parseCreateResponse(created.data);
+  if (!parsed.tradeId) {
+    return { ok: false, error: "order create returned no trade_id — treating as not created", raw: created.data };
   }
+  return {
+    ok: true,
+    alibabaOrderId: parsed.tradeId,
+    payUrl: parsed.payUrl ?? undefined,
+    freightFee: solution.freightFee,
+    carrierCode: solution.carrierCode,
+    raw: created.data,
+  };
+}
 
-  const paid = await orderApiCall(cfg, accessToken, ORDER_METHODS.pay, { order_id: alibabaOrderId });
-  if (!paid.ok) {
-    return { ok: false, alibabaOrderId, error: `order created (${alibabaOrderId}) but pay failed: ${paid.error}`, raw: paid.data };
-  }
-  return { ok: true, alibabaOrderId, raw: paid.data };
+/** Merge a new payload into the stored raw blob without dropping the
+ * placement facts (payUrl / freight / carrier) recorded at create time. */
+function mergeStatusRaw(prev: unknown, patch: Record<string, unknown>): Record<string, unknown> {
+  const base =
+    prev && typeof prev === "object" && !Array.isArray(prev) ? (prev as Record<string, unknown>) : {};
+  return { ...base, ...patch };
 }
 
 /** Best-effort status sync for a placed order. Never throws; when the
- * order APIs are not live the order is returned untouched. */
+ * order APIs are not live the order is returned untouched. An
+ * awaiting_payment order is checked against the pay-result query FIRST:
+ * PAY_SUCCESS moves it to `placed`; anything else is recorded and the
+ * order stays awaiting payment. */
 export async function syncAlibabaOrderStatus(
   admin: Admin,
   userId: string,
@@ -400,18 +467,43 @@ export async function syncAlibabaOrderStatus(
   if (order.status === "delivered" || order.status === "cancelled") return order;
   const authRes = await getValidAlibabaToken(admin, userId, env);
   if (!authRes.ok || !authRes.token || !authRes.cfg) return order;
+
+  let current = order;
+  if (order.status === "awaiting_payment") {
+    const payRes = await orderApiCall(authRes.cfg, authRes.token, ORDER_METHODS.payResultQuery, {
+      trade_id: Number(order.alibabaOrderId),
+    });
+    if (payRes.ok) {
+      const pay = parsePayResult(payRes.data);
+      const patch: Record<string, unknown> = {
+        alibaba_status_raw: mergeStatusRaw(current.alibabaStatusRaw, {
+          payResult: payRes.data ?? null,
+          ...(pay.payUrl ? { payUrl: pay.payUrl } : {}),
+        }),
+        last_synced_at: new Date().toISOString(),
+      };
+      if (pay.paid) patch.status = "placed";
+      current = (await updateOrder(admin, userId, order.id, patch)) ?? current;
+      if (pay.paid) return current;
+    }
+  }
+
   const res = await orderApiCall(authRes.cfg, authRes.token, ORDER_METHODS.get, {
-    order_id: order.alibabaOrderId,
+    order_id: current.alibabaOrderId,
   });
-  if (!res.ok) return order;
+  if (!res.ok) return current;
   const data = (res.data ?? {}) as Record<string, unknown>;
   const result = (data.result as Record<string, unknown> | undefined) ?? data;
   const rawStatus = result.status ?? result.order_status ?? result.trade_status;
   const mapped = mapAlibabaOrderStatus(rawStatus);
   const patch: Record<string, unknown> = {
-    alibaba_status_raw: res.data ?? null,
+    alibaba_status_raw: mergeStatusRaw(current.alibabaStatusRaw, { orderGet: res.data ?? null }),
     last_synced_at: new Date().toISOString(),
   };
-  if (mapped && mapped !== order.status) patch.status = mapped;
-  return (await updateOrder(admin, userId, order.id, patch)) ?? order;
+  // Never let a raw order/get status drag an unpaid order out of
+  // awaiting_payment — only the pay-result query settles payment.
+  if (mapped && mapped !== current.status && current.status !== "awaiting_payment") {
+    patch.status = mapped;
+  }
+  return (await updateOrder(admin, userId, current.id, patch)) ?? current;
 }
