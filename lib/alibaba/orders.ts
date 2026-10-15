@@ -23,13 +23,16 @@ import { callAlibabaApi, getAlibabaProduct, getValidAlibabaToken } from "./clien
 import {
   buildCreateRequest,
   buildFreightRequest,
+  buildSyncAttempt,
   freightGuard,
+  lastSyncFromRaw,
   mapAlibabaOrderStatus,
   ordersLiveFromEnv,
   parseCreateResponse,
   parsePayResult,
   pickFreightSolution,
   type AlibabaOrderStatus,
+  type AlibabaSyncAttempt,
 } from "./ordersCore";
 import {
   complianceChecklist,
@@ -73,6 +76,10 @@ export interface AlibabaOrderRecord {
    * alibaba_status_raw (no separate column — the raw payload is the
    * source of truth). Null unless the order is awaiting payment. */
   payUrl: string | null;
+  /** The most recent status-sync attempt, derived from
+   * alibaba_status_raw.lastSync (same no-separate-column pattern as
+   * payUrl). Null until a sync has run against this order. */
+  lastSync: AlibabaSyncAttempt | null;
   placedAt: string | null;
   lastSyncedAt: string | null;
   createdAt: string;
@@ -116,6 +123,7 @@ function rowToOrder(row: Record<string, unknown>): AlibabaOrderRecord {
     productComplianceId: row.product_compliance_id ? String(row.product_compliance_id) : null,
     alibabaStatusRaw: row.alibaba_status_raw ?? null,
     payUrl: payUrlFromRaw(row.alibaba_status_raw),
+    lastSync: lastSyncFromRaw(row.alibaba_status_raw),
     placedAt: row.placed_at ? String(row.placed_at) : null,
     lastSyncedAt: row.last_synced_at ? String(row.last_synced_at) : null,
     createdAt: String(row.created_at),
@@ -521,11 +529,40 @@ function mergeStatusRaw(prev: unknown, patch: Record<string, unknown>): Record<s
   return { ...base, ...patch };
 }
 
+/** Persist a sync-attempt record (ordersCore.buildSyncAttempt) merged
+ * into alibaba_status_raw, stamping last_synced_at — whose meaning is
+ * now "the sync last ran" (it is set on failed attempts too, not only
+ * on successful Alibaba reads). Best-effort like the sync itself: a
+ * failed record write returns the order unchanged instead of throwing. */
+async function recordSyncAttempt(
+  admin: Admin,
+  userId: string,
+  order: AlibabaOrderRecord,
+  attempt: AlibabaSyncAttempt
+): Promise<AlibabaOrderRecord> {
+  try {
+    const updated = await updateOrder(admin, userId, order.id, {
+      alibaba_status_raw: mergeStatusRaw(order.alibabaStatusRaw, { lastSync: attempt }),
+      last_synced_at: attempt.at,
+    });
+    return updated ?? order;
+  } catch {
+    return order;
+  }
+}
+
 /** Best-effort status sync for a placed order. Never throws; when the
  * order APIs are not live the order is returned untouched. An
  * awaiting_payment order is checked against the pay-result query FIRST:
  * PAY_SUCCESS moves it to `placed`; anything else is recorded and the
- * order stays awaiting payment. */
+ * order stays awaiting payment.
+ *
+ * Every exit past the live/id gates records the attempt (lastSync in
+ * alibaba_status_raw + last_synced_at) — token failure, pay-result
+ * failure, order/get failure, and success alike. The pre-observability
+ * version returned silently on the failure paths, so a paid order sat
+ * at awaiting_payment with last_synced_at NULL and no trace of which
+ * stage had failed (live incident, 2026-10-15). */
 export async function syncAlibabaOrderStatus(
   admin: Admin,
   userId: string,
@@ -535,32 +572,68 @@ export async function syncAlibabaOrderStatus(
   if (!ordersLiveFromEnv(env) || !order.alibabaOrderId) return order;
   if (order.status === "delivered" || order.status === "cancelled") return order;
   const authRes = await getValidAlibabaToken(admin, userId, env);
-  if (!authRes.ok || !authRes.token || !authRes.cfg) return order;
+  if (!authRes.ok || !authRes.token || !authRes.cfg) {
+    return recordSyncAttempt(
+      admin,
+      userId,
+      order,
+      buildSyncAttempt("token", false, authRes.error ?? "token unavailable")
+    );
+  }
 
   let current = order;
+  let payNote: string | null = null;
   if (order.status === "awaiting_payment") {
+    // trade_id travels as the EXACT STRING. Alibaba trade ids are 18
+    // digits — beyond Number.MAX_SAFE_INTEGER — so the previous
+    // Number(order.alibabaOrderId) stringified to a DIFFERENT id
+    // ("319281522001026345" became "319281522001026370") and the query
+    // asked Alibaba about a trade that does not exist: the pay-result
+    // leg could never succeed for a real trade.
     const payRes = await orderApiCall(authRes.cfg, authRes.token, ORDER_METHODS.payResultQuery, {
-      trade_id: Number(order.alibabaOrderId),
+      trade_id: order.alibabaOrderId,
     });
-    if (payRes.ok) {
-      const pay = parsePayResult(payRes.data);
-      const patch: Record<string, unknown> = {
-        alibaba_status_raw: mergeStatusRaw(current.alibabaStatusRaw, {
-          payResult: payRes.data ?? null,
-          ...(pay.payUrl ? { payUrl: pay.payUrl } : {}),
-        }),
-        last_synced_at: new Date().toISOString(),
-      };
-      if (pay.paid) patch.status = "placed";
-      current = (await updateOrder(admin, userId, order.id, patch)) ?? current;
-      if (pay.paid) return current;
+    if (!payRes.ok) {
+      return recordSyncAttempt(
+        admin,
+        userId,
+        current,
+        buildSyncAttempt("pay_result", false, payRes.error ?? "pay result query failed")
+      );
     }
+    const pay = parsePayResult(payRes.data);
+    const patch: Record<string, unknown> = {
+      alibaba_status_raw: mergeStatusRaw(current.alibabaStatusRaw, {
+        payResult: payRes.data ?? null,
+        ...(pay.payUrl ? { payUrl: pay.payUrl } : {}),
+      }),
+      last_synced_at: new Date().toISOString(),
+    };
+    if (pay.paid) patch.status = "placed";
+    current = (await updateOrder(admin, userId, order.id, patch)) ?? current;
+    if (pay.paid) {
+      return recordSyncAttempt(
+        admin,
+        userId,
+        current,
+        buildSyncAttempt("done", true, `pay status ${pay.status ?? "PAY_SUCCESS"}`)
+      );
+    }
+    payNote = `pay status ${pay.status ?? "unknown (unparseable response)"}`;
   }
 
   const res = await orderApiCall(authRes.cfg, authRes.token, ORDER_METHODS.get, {
     order_id: current.alibabaOrderId,
   });
-  if (!res.ok) return current;
+  if (!res.ok) {
+    const detail = [payNote, res.error ?? "order get failed"].filter(Boolean).join("; ");
+    return recordSyncAttempt(
+      admin,
+      userId,
+      current,
+      buildSyncAttempt("order_get", false, detail)
+    );
+  }
   const data = (res.data ?? {}) as Record<string, unknown>;
   const result = (data.result as Record<string, unknown> | undefined) ?? data;
   const rawStatus = result.status ?? result.order_status ?? result.trade_status;
@@ -574,5 +647,12 @@ export async function syncAlibabaOrderStatus(
   if (mapped && mapped !== current.status && current.status !== "awaiting_payment") {
     patch.status = mapped;
   }
-  return (await updateOrder(admin, userId, current.id, patch)) ?? current;
+  current = (await updateOrder(admin, userId, current.id, patch)) ?? current;
+  const detail = [
+    payNote,
+    `order status ${typeof rawStatus === "string" ? rawStatus : "unknown"}`,
+  ]
+    .filter(Boolean)
+    .join("; ");
+  return recordSyncAttempt(admin, userId, current, buildSyncAttempt("done", true, detail));
 }

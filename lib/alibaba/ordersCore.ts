@@ -489,6 +489,52 @@ export function parsePayResult(raw: unknown): {
   };
 }
 
+// --- Sync observability -----------------------------------------------------------
+
+/** One recorded status-sync attempt. The server sync (lib/alibaba/
+ * orders.ts) is best-effort and never throws, so this record — merged
+ * into alibaba_status_raw as `lastSync` — is the ONLY evidence an
+ * attempt leaves: which stage it reached, whether that stage succeeded,
+ * and a short detail (Alibaba's error excerpt, the pay status enum, …).
+ * Before this existed, a sync that failed at the token fetch or at
+ * either API call wrote nothing at all, so a paid order sat at
+ * awaiting_payment with last_synced_at NULL and no way to tell which
+ * stage had failed (live incident, 2026-10-15: trade 319281522001026345
+ * paid at 14:49, still unrecorded hours later). Built here as a pure
+ * function so the shape is harness-testable. */
+export interface AlibabaSyncAttempt {
+  at: string;
+  stage: "token" | "pay_result" | "order_get" | "done";
+  ok: boolean;
+  detail: string;
+}
+
+export function buildSyncAttempt(
+  stage: AlibabaSyncAttempt["stage"],
+  ok: boolean,
+  detail: string,
+  at: Date = new Date()
+): AlibabaSyncAttempt {
+  const clean = (detail ?? "").replace(/\s+/g, " ").trim().slice(0, 200);
+  return { at: at.toISOString(), stage, ok, detail: clean || (ok ? "ok" : "failed") };
+}
+
+/** Read a previously recorded sync attempt back out of a raw payload —
+ * used to surface the last attempt on the order record (and the page). */
+export function lastSyncFromRaw(raw: unknown): AlibabaSyncAttempt | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const v = (raw as Record<string, unknown>).lastSync;
+  if (!v || typeof v !== "object" || Array.isArray(v)) return null;
+  const rec = v as Record<string, unknown>;
+  if (typeof rec.at !== "string" || typeof rec.stage !== "string" || typeof rec.ok !== "boolean") return null;
+  return {
+    at: rec.at,
+    stage: rec.stage as AlibabaSyncAttempt["stage"],
+    ok: rec.ok,
+    detail: typeof rec.detail === "string" ? rec.detail : "",
+  };
+}
+
 // --- Status mapping from Alibaba payloads ----------------------------------------------
 
 /** Map a raw Alibaba order-status string onto our lifecycle. Unknown values
