@@ -8,6 +8,7 @@ import {
   ordersLiveFromEnv,
   draftBlockReason,
   totalsFromLanded,
+  totalsFromLandedWithFreight,
   evaluateDraftEconomics,
   evaluatePlacement,
   mapAlibabaOrderStatus,
@@ -85,6 +86,34 @@ check(
 );
 const moqLanded = detail ? bestLandedCost(detail, 10) : null;
 check("totals: qty below MOQ is raised to MOQ", moqLanded !== null && moqLanded.orderQty === 50 && totalsFromLanded(moqLanded).qty === 50);
+
+// --- draft totals with REAL freight: the live quote replaces nominal shipping ---
+// Live case (2026-10-15): the cubes draft's nominal shipping was $0.03/unit
+// ($10.50 total); the real /order/freight/calculate quote was $388.11. A
+// draft must be built on the real number so the approval is a true total.
+const cubesLanded = { skuId: "105532731428", orderQty: 350, unitPrice: 2.7, shippingPerUnit: 0.03, landedPerUnit: 2.73 };
+const cubesTotals = totalsFromLandedWithFreight(cubesLanded, 388.11);
+check(
+  "freight totals: product $945.00 + real freight $388.11 -> order total $1333.11",
+  cubesTotals.qty === 350 && cubesTotals.unitPrice === 2.7 && cubesTotals.orderTotal === 1333.11,
+  JSON.stringify(cubesTotals)
+);
+check(
+  "freight totals: per-unit landed is $3.81 on real freight, not $2.73 on nominal shipping",
+  cubesTotals.landedPerUnit === 3.81,
+  JSON.stringify(cubesTotals)
+);
+check(
+  "freight totals: shipping per unit is the real freight spread ($1.11), not the nominal $0.03",
+  cubesTotals.shippingPerUnit === 1.11,
+  JSON.stringify(cubesTotals)
+);
+const fixtureFreight = landed ? totalsFromLandedWithFreight(landed, 88.25) : null;
+check(
+  "freight totals: fixture — product $210.00 + freight $88.25 -> $298.25, landed $2.98, ship/unit $0.88 (nominal $0.30 replaced)",
+  fixtureFreight !== null && fixtureFreight.orderTotal === 298.25 && fixtureFreight.landedPerUnit === 2.98 && fixtureFreight.shippingPerUnit === 0.88,
+  JSON.stringify(fixtureFreight)
+);
 
 // --- state machine: no path skips approval --------------------------------------
 check("sm: draft -> pending_approval allowed", canTransitionOrder("draft", "pending_approval") === true);
