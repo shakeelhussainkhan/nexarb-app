@@ -65,6 +65,11 @@ export interface IntentInput {
   usage: SpendUsage; // injectable committed-spend state
   killSwitchOn: boolean;
   recheckDone: boolean; // was eligibility synchronously re-checked for this intent?
+  // Import intents (Alibaba order drafts) ONLY: bulk quantities are the
+  // point of the import channel, so the per-ASIN unit cap — a retail-deal
+  // guardrail — does not apply. The dollar caps (per-order + daily) still
+  // bind in full. Retail callers must leave this unset.
+  exemptUnitsCap?: boolean;
 }
 
 export interface GuardDecision {
@@ -113,11 +118,13 @@ export function canCreateIntent(input: IntentInput): GuardDecision {
     }
   }
 
-  const unitsAfter = input.usage.unitsForAsinToday + input.qty;
-  if (unitsAfter > input.caps.maxUnitsPerAsin) {
-    reasons.push(
-      `Would exceed the ${input.caps.maxUnitsPerAsin} units/ASIN cap (founder-confirmed default): ${input.usage.unitsForAsinToday} already committed for ${input.asin} today.`
-    );
+  if (!input.exemptUnitsCap) {
+    const unitsAfter = input.usage.unitsForAsinToday + input.qty;
+    if (unitsAfter > input.caps.maxUnitsPerAsin) {
+      reasons.push(
+        `Would exceed the ${input.caps.maxUnitsPerAsin} units/ASIN cap (founder-confirmed default): ${input.usage.unitsForAsinToday} already committed for ${input.asin} today.`
+      );
+    }
   }
 
   return { allowed: reasons.length === 0, reasons };

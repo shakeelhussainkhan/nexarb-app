@@ -74,6 +74,14 @@ check("per-ASIN cap blocked", (() => {
   const d = canCreateIntent({ ...base(), qty: 5, usage: { spentToday: 0, unitsForAsinToday: 18 } }); // 18+5 > 20
   return !d.allowed && d.reasons.some((r) => r.includes("units/ASIN"));
 })());
+check("per-ASIN cap skipped only with exemptUnitsCap (import intents)", (() => {
+  const d = canCreateIntent({ ...base(), qty: 350, unitPrice: 2.73, exemptUnitsCap: true }); // $955.50 import order
+  return d.allowed && d.reasons.length === 0;
+})());
+check("exempt import intent still bound by the per-order dollar cap", (() => {
+  const d = canCreateIntent({ ...base(), qty: 400, unitPrice: 2.73, exemptUnitsCap: true }); // $1,092 > $1,000
+  return !d.allowed && d.reasons.some((r) => r.includes("per-order cap")) && !d.reasons.some((r) => r.includes("units/ASIN"));
+})());
 
 // 4. Kill switch blocks even a perfect deal.
 check("kill switch blocks everything", (() => {

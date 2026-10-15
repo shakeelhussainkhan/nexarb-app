@@ -8,6 +8,7 @@ import {
   ordersLiveFromEnv,
   draftBlockReason,
   totalsFromLanded,
+  evaluateDraftEconomics,
   evaluatePlacement,
   mapAlibabaOrderStatus,
 } from "@/lib/alibaba/ordersCore.ts";
@@ -140,6 +141,23 @@ const oldCapsBlock = canCreateIntent({
   unitPrice: 90,
 });
 check("caps: the same $900 order FAILS under a $250 per-order cap object (caps are data from the source, not hardcoded)", oldCapsBlock.allowed === false);
+
+// --- import-intent economics verdict (draft's own numbers, no velocity leg) -----
+const econBuy = evaluateDraftEconomics({ landedPerUnit: 2.73, expectedSellPrice: 19.99 });
+check("econ: packing-cubes draft (landed 2.73, sell 19.99) is BUY", econBuy.verdict === "BUY", JSON.stringify(econBuy));
+check("econ: floor sits between landed cost and sell price (fee stack + 20% margin)", econBuy.floorPrice > 2.73 && econBuy.floorPrice < 19.99, String(econBuy.floorPrice));
+const econSkip = evaluateDraftEconomics({ landedPerUnit: 2.73, expectedSellPrice: 11.99 });
+check("econ: sell 11.99 below the ~$12.06 floor is SKIP", econSkip.verdict === "SKIP", JSON.stringify(econSkip));
+const econUnknown = evaluateDraftEconomics({ landedPerUnit: 2.73, expectedSellPrice: null });
+check("econ: missing expected sell price is UNKNOWN, never BUY", econUnknown.verdict === "UNKNOWN");
+
+// --- import intent through the guardrail gate: unit cap exempt, dollars bind -----
+const importGate = { ...baseGate, verdict: econBuy.verdict, qty: 350, unitPrice: 2.73, exemptUnitsCap: true };
+check("gate: 350-unit import intent passes with the unit-cap exemption", canCreateIntent(importGate).allowed === true);
+const importGateNoExempt = canCreateIntent({ ...importGate, exemptUnitsCap: false });
+check("gate: the same intent WITHOUT the exemption fails the 20 units/ASIN cap", importGateNoExempt.allowed === false && importGateNoExempt.reasons.some((r) => r.includes("units/ASIN")));
+const importGateOverOrder = canCreateIntent({ ...importGate, qty: 400 }); // $1,092 total
+check("gate: the exemption does not lift the $1,000 per-order cap", importGateOverOrder.allowed === false && importGateOverOrder.reasons.some((r) => r.includes("per-order cap")));
 
 // --- raw status mapping ------------------------------------------------------------
 check("map: 'shipped' -> shipped", mapAlibabaOrderStatus("shipped") === "shipped");
