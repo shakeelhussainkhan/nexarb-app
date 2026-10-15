@@ -141,6 +141,10 @@ export async function insertOrder(
     moq: number | null;
     offerSnapshot: Record<string, unknown>;
     screening: ScreeningResult;
+    /** Real freight quoted at draft time — persisted into
+     * alibaba_status_raw as { freightQuote } so the approval carries
+     * the quote the totals were built from. */
+    freightQuote?: DraftFreightQuote | null;
   }
 ): Promise<{ ok: boolean; order?: AlibabaOrderRecord; error?: string }> {
   const { data, error } = await admin
@@ -164,6 +168,7 @@ export async function insertOrder(
       currency: input.currency,
       moq: input.moq,
       offer_snapshot: input.offerSnapshot,
+      ...(input.freightQuote ? { alibaba_status_raw: { freightQuote: input.freightQuote } } : {}),
       screening_verdict: input.screening.verdict,
       screening_reasons: input.screening.reasons,
       screening_category: input.screening.category,
@@ -361,6 +366,70 @@ async function orderApiCall(
       typeof value === "string" ? value : typeof value === "object" ? JSON.stringify(value) : String(value);
   }
   return callAlibabaApi(cfg, accessToken, method, params, "POST");
+}
+
+/** A real freight quote captured at DRAFT time (see quoteDraftFreight) —
+ * persisted on the draft so the founder's approval is against true
+ * totals, and placement's re-quote can be compared against it by the
+ * freight guard. */
+export interface DraftFreightQuote {
+  freightFee: number;
+  /** vendor_code of the chosen (cheapest) solution — the carrier_code
+   * placement will request at create. */
+  carrierCode: string;
+  deliveryTime: string | null;
+  tradeTerm: string | null;
+  quotedAt: string;
+}
+
+/**
+ * Quote REAL door-to-door freight for a would-be draft via
+ * /order/freight/calculate. Draft creation FAILS when no quote can be
+ * produced — there is deliberately no fallback to the product
+ * description's nominal shipping figure: that figure is not a freight
+ * price (live proof, 2026-10-15: $10.50 nominal vs $388.11 real on the
+ * same 350 units), and a draft built on it asks the founder to approve
+ * a total that placement will then refuse.
+ */
+export async function quoteDraftFreight(
+  cfg: AlibabaConfig,
+  accessToken: string,
+  input: { eCompanyId: string | null; productId: string; skuId: string | null; qty: number }
+): Promise<{ ok: boolean; quote?: DraftFreightQuote; error?: string }> {
+  if (!input.eCompanyId) {
+    return {
+      ok: false,
+      error: "could not quote freight: supplier company id (e_company_id) unavailable from product description",
+    };
+  }
+  const res = await orderApiCall(cfg, accessToken, ORDER_METHODS.freightCalculate, {
+    ...buildFreightRequest({
+      eCompanyId: input.eCompanyId,
+      productId: input.productId,
+      skuId: input.skuId,
+      qty: input.qty,
+    }),
+  });
+  if (!res.ok) return { ok: false, error: `could not quote freight: ${res.error}` };
+  const solution = pickFreightSolution(res.data);
+  if (!solution) {
+    return { ok: false, error: "could not quote freight: freight calculate returned no usable shipping solution" };
+  }
+  const rawRec =
+    solution.raw && typeof solution.raw === "object" && !Array.isArray(solution.raw)
+      ? (solution.raw as Record<string, unknown>)
+      : {};
+  const tradeTerm = rawRec.trade_term ?? rawRec.tradeTerm;
+  return {
+    ok: true,
+    quote: {
+      freightFee: solution.freightFee,
+      carrierCode: solution.carrierCode,
+      deliveryTime: solution.deliveryTime,
+      tradeTerm: typeof tradeTerm === "string" && tradeTerm ? tradeTerm : null,
+      quotedAt: new Date().toISOString(),
+    },
+  };
 }
 
 export interface PlaceResult {

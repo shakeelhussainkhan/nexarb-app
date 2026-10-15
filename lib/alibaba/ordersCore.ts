@@ -109,6 +109,28 @@ export function totalsFromLanded(landed: LandedCost): OrderTotals {
   };
 }
 
+/**
+ * Draft totals with the REAL freight quote (/order/freight/calculate,
+ * quoted at draft time) REPLACING the description's nominal shipping
+ * component. The nominal figure proved meaningless live (a 350-unit
+ * cubes draft carried $10.50 of "shipping"; the real door-to-door quote
+ * was $388.11), and an approval is only meaningful against a true total:
+ * orderTotal = qty × unitPrice + freightFee, exactly. Per-unit figures
+ * derive from that total at the DB's 2dp precision (numeric(12,2)).
+ */
+export function totalsFromLandedWithFreight(landed: LandedCost, freightFee: number): OrderTotals {
+  const fee = Math.round(freightFee * 100) / 100;
+  const productTotal = Math.round(landed.orderQty * landed.unitPrice * 100) / 100;
+  const orderTotal = Math.round((productTotal + fee) * 100) / 100;
+  return {
+    qty: landed.orderQty,
+    unitPrice: landed.unitPrice,
+    shippingPerUnit: Math.round((fee / landed.orderQty) * 100) / 100,
+    landedPerUnit: Math.round((orderTotal / landed.orderQty) * 100) / 100,
+    orderTotal,
+  };
+}
+
 // --- Import-intent economics verdict -------------------------------------------
 
 export interface DraftEconomics {

@@ -62,12 +62,12 @@ check("daily cap accumulation blocked", (() => {
   }); // $1,700 already committed + $900 order > $2,500 daily cap
   return !d.allowed && d.reasons.some((r) => r.includes("daily spend cap"));
 })());
-check("per-order cap allows a $900 order", (() => {
-  const d = canCreateIntent({ ...base(), qty: 9, unitPrice: 100 }); // $900 <= $1,000
+check("per-order cap allows a $1,400 order", (() => {
+  const d = canCreateIntent({ ...base(), qty: 14, unitPrice: 100 }); // $1,400 <= $1,500
   return d.allowed && d.reasons.length === 0;
 })());
-check("per-order cap blocks a $1,100 order", (() => {
-  const d = canCreateIntent({ ...base(), qty: 11, unitPrice: 100 }); // $1,100 > $1,000
+check("per-order cap blocks a $1,600 order", (() => {
+  const d = canCreateIntent({ ...base(), qty: 16, unitPrice: 100 }); // $1,600 > $1,500
   return !d.allowed && d.reasons.some((r) => r.includes("per-order cap"));
 })());
 check("per-ASIN cap blocked", (() => {
@@ -79,7 +79,7 @@ check("per-ASIN cap skipped only with exemptUnitsCap (import intents)", (() => {
   return d.allowed && d.reasons.length === 0;
 })());
 check("exempt import intent still bound by the per-order dollar cap", (() => {
-  const d = canCreateIntent({ ...base(), qty: 400, unitPrice: 2.73, exemptUnitsCap: true }); // $1,092 > $1,000
+  const d = canCreateIntent({ ...base(), qty: 600, unitPrice: 2.73, exemptUnitsCap: true }); // $1,638 > $1,500
   return !d.allowed && d.reasons.some((r) => r.includes("per-order cap")) && !d.reasons.some((r) => r.includes("units/ASIN"));
 })());
 
@@ -123,7 +123,7 @@ check("audit entry shape", (() => {
 // 9. Env parsing for caps and kill switch.
 check("capsFromEnv defaults", (() => {
   const c = capsFromEnv({});
-  return c.dailySpendCap === 2500 && c.perOrderCap === 1000 && c.maxUnitsPerAsin === 20;
+  return c.dailySpendCap === 2500 && c.perOrderCap === 1500 && c.maxUnitsPerAsin === 20;
 })());
 check("capsFromEnv overrides", (() => {
   const c = capsFromEnv({ NEXARB_DAILY_SPEND_CAP: "1000", NEXARB_PER_ORDER_CAP: "100", NEXARB_MAX_UNITS_PER_ASIN: "5" });
