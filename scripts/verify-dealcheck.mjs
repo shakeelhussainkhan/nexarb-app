@@ -19,7 +19,7 @@ check("verdict UNKNOWN without sell price", trace.verdict.state === "UNKNOWN");
 check("guards refuse intent", trace.guards.wouldCreateIntent === false);
 check(
   "caps surfaced",
-  trace.guards.caps.dailySpendCap === 500 && trace.guards.caps.perOrderCap === 250
+  trace.guards.caps.dailySpendCap === 2500 && trace.guards.caps.perOrderCap === 1000
 );
 check("kill switch off", trace.guards.killSwitchOn === false);
 
