@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { resolveUser } from "@/lib/auth/resolveUser";
-import { supabaseIsConfigured } from "@/lib/engine/guards";
+import { capsFromEnv, supabaseIsConfigured } from "@/lib/engine/guards";
 import { getSupabaseAdmin } from "@/lib/supabase";
 import { getValidAlibabaToken } from "@/lib/alibaba/client";
 import {
@@ -28,8 +28,11 @@ import {
 // pretend to be placed: it moves to `ready_to_place`, its compliance
 // records (product checklist + import shipment) are created, and the
 // response says plainly that no order was sent to Alibaba. When the flag
-// is on, the order is created + paid through lib/alibaba/orders.ts and
-// the compliance records are created on placement.
+// is on, the order is created on Alibaba through lib/alibaba/orders.ts
+// (freight-quoted and price-guarded first) and lands in
+// `awaiting_payment`: there is no headless API payment, so the founder
+// pays at Alibaba's cashier via the returned pay link, and the
+// compliance records are created on placement.
 
 export async function POST(
   req: NextRequest,
@@ -96,12 +99,15 @@ export async function POST(
     });
   }
 
-  // Live path: create + pay on Alibaba, then create compliance records.
+  // Live path: freight-quote, price-guard and create the order on
+  // Alibaba, then create compliance records. The created order is UNPAID
+  // — it lands in awaiting_payment with its cashier pay link stored.
   const authRes = await getValidAlibabaToken(admin, identity.userId);
   if (!authRes.ok || !authRes.token || !authRes.cfg) {
     return NextResponse.json({ success: false, error: authRes.error ?? "Alibaba is not connected." }, { status: 400 });
   }
-  const placed = await placeAlibabaOrder(authRes.cfg, authRes.token, order);
+  const caps = capsFromEnv(process.env);
+  const placed = await placeAlibabaOrder(authRes.cfg, authRes.token, order, caps.perOrderCap);
   if (!placed.ok) {
     const failed = await updateOrder(admin, identity.userId, order.id, {
       status: "failed",
@@ -113,20 +119,31 @@ export async function POST(
       { status: 502 }
     );
   }
+  const placedAt = new Date().toISOString();
   order =
     (await updateOrder(admin, identity.userId, order.id, {
-      status: "placed",
+      status: "awaiting_payment",
       alibaba_order_id: placed.alibabaOrderId,
-      alibaba_status_raw: placed.raw ?? null,
-      placed_at: new Date().toISOString(),
+      alibaba_status_raw: {
+        payUrl: placed.payUrl ?? null,
+        freightFee: placed.freightFee ?? null,
+        carrierCode: placed.carrierCode ?? null,
+        createRaw: placed.raw ?? null,
+        placedAt,
+      },
+      placed_at: placedAt,
     })) ?? order;
   const compliance = await ensureComplianceRecords(admin, identity.userId, order);
   const fresh = (await getOrder(admin, identity.userId, order.id)) ?? order;
   return NextResponse.json({
     success: true,
     placed: true,
-    state: "placed",
+    state: "awaiting_payment",
     order: fresh,
     compliance,
+    payUrl: placed.payUrl ?? null,
+    note: placed.payUrl
+      ? `Order created on Alibaba (trade ${placed.alibabaOrderId}) — awaiting payment: ${placed.payUrl}`
+      : `Order created on Alibaba (trade ${placed.alibabaOrderId}) — awaiting payment. Alibaba returned no payment link; pay from your Alibaba orders page.`,
   });
 }
