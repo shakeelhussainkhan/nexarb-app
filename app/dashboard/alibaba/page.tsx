@@ -491,14 +491,20 @@ export default function AlibabaPage() {
                               {busyOrderId === o.id ? "Working…" : "Create intent"}
                             </button>
                           )}
-                          {(o.status === "approved" || o.status === "ready_to_place") && (
+                          {(o.status === "approved" || o.status === "ready_to_place" || (o.status === "failed" && !o.alibabaOrderId)) && (
                             <button
                               onClick={() => orderAction(o, "place")}
                               disabled={busyOrderId === o.id || o.intentStatus !== "APPROVED"}
                               className="text-xs font-semibold px-3 py-1.5 rounded-lg text-white disabled:opacity-50"
                               style={{ background: "#0D1B2A" }}
                             >
-                              {busyOrderId === o.id ? "Working…" : o.status === "ready_to_place" && !ordersLive ? "Re-check" : "Place order"}
+                              {busyOrderId === o.id
+                                ? "Working…"
+                                : o.status === "failed"
+                                  ? "Retry placement"
+                                  : o.status === "ready_to_place" && !ordersLive
+                                    ? "Re-check"
+                                    : "Place order"}
                             </button>
                           )}
                           {o.status === "awaiting_payment" && o.payUrl && (
