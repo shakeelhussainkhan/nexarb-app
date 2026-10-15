@@ -15,6 +15,7 @@
 
 import type { LandedCost } from "./core";
 import type { ScreeningResult } from "@/lib/compliance/core";
+import { floorPrice, outcomeAtPrice, referralPctForCategory } from "../engine/pricing.ts";
 
 // --- Lifecycle ---------------------------------------------------------------
 
@@ -97,6 +98,74 @@ export function totalsFromLanded(landed: LandedCost): OrderTotals {
     shippingPerUnit: landed.shippingPerUnit,
     landedPerUnit: landed.landedPerUnit,
     orderTotal,
+  };
+}
+
+// --- Import-intent economics verdict -------------------------------------------
+
+export interface DraftEconomics {
+  verdict: "BUY" | "SKIP" | "UNKNOWN";
+  reasons: string[];
+  floorPrice: number;
+  netProfitPerUnit: number;
+  marginPct: number; // percent, at the expected sell price
+}
+
+/**
+ * Verdict for an Alibaba import draft, computed from the DRAFT's own
+ * economics — the same fee-stack math (lib/engine/pricing) and the same
+ * 20% target margin evaluateDeal applies to retail deals.
+ *
+ * The retail verdict's velocity leg is deliberately absent here: the
+ * imported product has no listing of ours yet, so there is no BSR or
+ * sell-through signal for OUR listing, and a benchmark ASIN's velocity
+ * measures the benchmark brand's demand, not ours. (Feeding evaluateDeal
+ * no velocity signal makes it answer UNKNOWN for every import, however
+ * profitable.) Sell-through risk on imports is carried instead by the
+ * guardrail dollar caps and the founder's approval of the intent.
+ */
+export function evaluateDraftEconomics(input: {
+  landedPerUnit: number;
+  expectedSellPrice: number | null | undefined;
+  category?: string;
+  targetMarginPct?: number;
+}): DraftEconomics {
+  const targetMargin = input.targetMarginPct ?? 0.2;
+  const sell = input.expectedSellPrice ?? NaN;
+  if (!(input.landedPerUnit > 0) || !(sell > 0)) {
+    return {
+      verdict: "UNKNOWN",
+      reasons: ["Missing landed cost / expected sell price — cannot evaluate."],
+      floorPrice: 0,
+      netProfitPerUnit: 0,
+      marginPct: 0,
+    };
+  }
+  const costs = {
+    buyCost: input.landedPerUnit,
+    referralPct: referralPctForCategory(input.category),
+  };
+  const floor = floorPrice(costs, targetMargin);
+  const outcome = outcomeAtPrice(sell, costs);
+  const reasons: string[] = [];
+  let verdict: DraftEconomics["verdict"];
+  if (sell >= floor) {
+    verdict = "BUY";
+    reasons.push(
+      `Net $${outcome.netProfit.toFixed(2)}/unit at expected sell $${sell.toFixed(2)} (${(outcome.marginPct * 100).toFixed(1)}% margin) clears the $${floor.toFixed(2)} floor at ${(targetMargin * 100).toFixed(0)}% target margin.`
+    );
+  } else {
+    verdict = "SKIP";
+    reasons.push(
+      `Expected sell $${sell.toFixed(2)} is below floor $${floor.toFixed(2)} at ${(targetMargin * 100).toFixed(0)}% target margin.`
+    );
+  }
+  return {
+    verdict,
+    reasons,
+    floorPrice: Math.round(floor * 100) / 100,
+    netProfitPerUnit: Math.round(outcome.netProfit * 100) / 100,
+    marginPct: Math.round(outcome.marginPct * 1000) / 10,
   };
 }
 

@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
 import { resolveUser } from "@/lib/auth/resolveUser";
-import { evaluateDeal } from "@/lib/engine/verdict";
 import { checkEligibility, spApiConfigFromEnv, EligibilityCache } from "@/lib/engine/eligibility";
 import {
   buildAuditEntry,
@@ -12,7 +11,7 @@ import {
   supabaseIsConfigured,
   type SpendUsage,
 } from "@/lib/engine/guards";
-import { canTransitionOrder } from "@/lib/alibaba/ordersCore";
+import { canTransitionOrder, evaluateDraftEconomics } from "@/lib/alibaba/ordersCore";
 import { getSupabaseAdmin } from "@/lib/supabase";
 import { getOrder, updateOrder } from "@/lib/alibaba/orders";
 
@@ -21,11 +20,16 @@ import { getOrder, updateOrder } from "@/lib/alibaba/orders";
 // Convert a priced draft into a purchase intent THROUGH the existing
 // purchases pipeline — the same server-side gates POST /api/purchases
 // applies, imported from the same modules:
-//   1. engine verdict (evaluateDeal) computed here from the draft's
-//      landed cost vs its expected Amazon sell price — must be BUY;
+//   1. economics verdict (evaluateDraftEconomics) computed here from the
+//      draft's landed cost vs its expected Amazon sell price — the same
+//      fee-stack math and 20% target margin as the retail verdict, minus
+//      the velocity leg (a not-yet-listed import has no BSR of its own) —
+//      must be BUY;
 //   2. Amazon eligibility synchronously re-checked (never cached-only);
-//   3. guardrail caps from capsFromEnv (daily / per-order / per-ASIN) —
-//      the caps' single source of truth, never hardcoded here;
+//   3. guardrail caps from capsFromEnv (daily / per-order; the per-ASIN
+//      unit cap is a retail guardrail and does not apply to import
+//      intents — see exemptUnitsCap in lib/engine/guards) — the caps'
+//      single source of truth, never hardcoded here;
 //   4. purchasing kill switch.
 // The intent lands in `purchases` as PENDING_APPROVAL; the founder
 // approves or rejects it in the normal Purchases flow. This route never
@@ -79,10 +83,10 @@ export async function POST(
   }
 
   // Gates 1+2: verdict + live eligibility re-check.
-  const evaluation = evaluateDeal(
-    { buyPrice: order.landedPerUnit, sellPrice: order.expectedSellPrice },
-    { qty: order.qty }
-  );
+  const evaluation = evaluateDraftEconomics({
+    landedPerUnit: order.landedPerUnit,
+    expectedSellPrice: order.expectedSellPrice,
+  });
   const eligibility = await checkEligibility(spApiConfigFromEnv(process.env), order.targetAsin, eligibilityCache);
 
   // Gate 3+4: caps + kill switch, usage tallied exactly like /api/purchases.
@@ -109,6 +113,7 @@ export async function POST(
     usage,
     killSwitchOn,
     recheckDone: true, // eligibility was just re-checked above
+    exemptUnitsCap: true, // import intent: bulk qty is the point; dollar caps still bind
   });
   if (!decision.allowed) {
     return NextResponse.json(
