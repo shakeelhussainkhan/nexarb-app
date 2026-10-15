@@ -201,7 +201,7 @@ function StatsBand() {
   const stats = [
     { value: "2", label: "Live marketplace APIs", sub: "Amazon SP-API + Walmart" },
     { value: "100%", label: "Human-approved buys", sub: "Nothing purchased without you" },
-    { value: "$500", label: "Default daily spend cap", sub: "Guardrails you control" },
+    { value: "$2,500", label: "Default daily spend cap", sub: "Guardrails you control" },
     { value: "20", label: "Max units per ASIN / day", sub: "Velocity-safe sizing" },
   ];
   return (

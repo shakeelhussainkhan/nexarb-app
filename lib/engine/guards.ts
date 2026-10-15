@@ -2,8 +2,9 @@
 // state machine. Pure functions with injectable state so every rule is
 // unit-testable offline. Nothing here touches the network or a database.
 //
-// Founder guardrail DEFAULTS — founder to confirm before they become policy.
-// They are labelled "default" wherever they are surfaced (API responses, UI).
+// Founder-confirmed guardrail defaults (2026-10-14). Environment variables
+// may override them; they are labelled "default" wherever they are surfaced
+// (API responses, UI).
 
 import type { EligibilityState } from "./eligibility.ts";
 
@@ -18,12 +19,11 @@ export interface SpendCaps {
   maxUnitsPerAsin: number; // units per ASIN per day
 }
 
-// Default guardrails. Not confirmed founder policy yet — confirm before
-// treating these as final limits.
+// Founder-confirmed default guardrails (2026-10-14).
 export const DEFAULT_SPEND_CAPS: SpendCaps = {
-  dailySpendCap: 500, // default — founder to confirm
-  perOrderCap: 250, // default — founder to confirm
-  maxUnitsPerAsin: 20, // default — founder to confirm
+  dailySpendCap: 2500, // founder-confirmed default
+  perOrderCap: 1000, // founder-confirmed default
+  maxUnitsPerAsin: 20, // founder-confirmed default
 };
 
 // Already-committed spend, injected by the caller (Supabase query or
@@ -103,12 +103,12 @@ export function canCreateIntent(input: IntentInput): GuardDecision {
   if (Number.isFinite(orderTotal)) {
     if (orderTotal > input.caps.perOrderCap) {
       reasons.push(
-        `Order total $${orderTotal.toFixed(2)} exceeds the per-order cap of $${input.caps.perOrderCap.toFixed(2)} (default — founder to confirm).`
+        `Order total $${orderTotal.toFixed(2)} exceeds the per-order cap of $${input.caps.perOrderCap.toFixed(2)} (founder-confirmed default).`
       );
     }
     if (input.usage.spentToday + orderTotal > input.caps.dailySpendCap) {
       reasons.push(
-        `Would exceed the daily spend cap of $${input.caps.dailySpendCap.toFixed(2)} (default — founder to confirm): $${input.usage.spentToday.toFixed(2)} already committed today.`
+        `Would exceed the daily spend cap of $${input.caps.dailySpendCap.toFixed(2)} (founder-confirmed default): $${input.usage.spentToday.toFixed(2)} already committed today.`
       );
     }
   }
@@ -116,7 +116,7 @@ export function canCreateIntent(input: IntentInput): GuardDecision {
   const unitsAfter = input.usage.unitsForAsinToday + input.qty;
   if (unitsAfter > input.caps.maxUnitsPerAsin) {
     reasons.push(
-      `Would exceed the ${input.caps.maxUnitsPerAsin} units/ASIN cap (default — founder to confirm): ${input.usage.unitsForAsinToday} already committed for ${input.asin} today.`
+      `Would exceed the ${input.caps.maxUnitsPerAsin} units/ASIN cap (founder-confirmed default): ${input.usage.unitsForAsinToday} already committed for ${input.asin} today.`
     );
   }
 

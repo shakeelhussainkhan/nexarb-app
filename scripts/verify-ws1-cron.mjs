@@ -54,7 +54,7 @@ const trace = {
   guards: {
     wouldCreateIntent: false,
     reasons: [],
-    caps: { dailySpendCap: 500, perOrderCap: 250, maxUnitsPerAsin: 20 },
+    caps: { dailySpendCap: 2500, perOrderCap: 1000, maxUnitsPerAsin: 20 },
     usage: { spentToday: 0, unitsForAsinToday: 0 },
     killSwitchOn: false,
   },
