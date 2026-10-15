@@ -419,14 +419,9 @@ export default function AlibabaPage() {
         <p className="text-sm text-gray-500 mb-4">
           Draft → purchase intent (Purchases page approval) → place. The guardrail caps apply to the
           intent exactly as for any other purchase.
-          {!ordersLive && (
-            <>
-              {" "}
-              Alibaba order APIs are not live-verified yet, so an approved order stops at{" "}
-              <strong>ready to place</strong> — with its import shipment + compliance checklist
-              created — instead of being sent to Alibaba.
-            </>
-          )}
+          {" "}
+          Placing an approved order creates a real Alibaba Trade Assurance order — you then
+          pay for it at Alibaba&rsquo;s cashier; NexArb itself never charges the order.
         </p>
         {orders.length === 0 ? (
           <div className="text-sm text-gray-500">No Alibaba orders yet. Draft one from a search result above.</div>
