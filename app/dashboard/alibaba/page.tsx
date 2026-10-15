@@ -36,6 +36,7 @@ type Order = {
   purchaseIntentId: string | null;
   intentStatus: string | null;
   alibabaOrderId: string | null;
+  payUrl: string | null;
   shipmentId: string | null;
   createdAt: string;
 };
@@ -57,6 +58,7 @@ const ORDER_STATUS_STYLE: Record<string, { background: string; color: string }> 
   pending_approval: { background: "#FEF3C7", color: "#92400E" },
   approved: { background: "#DBEAFE", color: "#1E40AF" },
   ready_to_place: { background: "#E0E7FF", color: "#3730A3" },
+  awaiting_payment: { background: "#FFEDD5", color: "#9A3412" },
   placed: { background: "#D1FAE5", color: "#065F46" },
   shipped: { background: "#D1FAE5", color: "#065F46" },
   delivered: { background: "#D1FAE5", color: "#065F46" },
@@ -498,6 +500,17 @@ export default function AlibabaPage() {
                             >
                               {busyOrderId === o.id ? "Working…" : o.status === "ready_to_place" && !ordersLive ? "Re-check" : "Place order"}
                             </button>
+                          )}
+                          {o.status === "awaiting_payment" && o.payUrl && (
+                            <a
+                              href={o.payUrl}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="text-xs font-semibold px-3 py-1.5 rounded-lg"
+                              style={{ background: "#D4AF37", color: "#0D1B2A" }}
+                            >
+                              Pay on Alibaba
+                            </a>
                           )}
                         </div>
                       </td>
