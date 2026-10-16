@@ -2,6 +2,9 @@
 // and its wiring in the evaluation core (lib/suppliers/evaluateCore.ts):
 // the five hand-vetted 2026-10-16 Frontier fixtures (every one a pack
 // mismatch), the GTIN-14 refusal, and the single-unit controls.
+// v2 adds the REAL listing titles from the first post-deploy production
+// evaluate batch whose pack declarations v1 missed ("N per case",
+// "size x N", "NPk", "N Units", "Box/Set of N") plus their negatives.
 // Run: node --experimental-strip-types --loader ./scripts/alias-loader.mjs scripts/verify-pack-normalization.mjs
 // Pure-logic tests — NO network, NO database.
 import {
@@ -48,6 +51,22 @@ const hasReason = (ev, frag) => ev.reasons.some((r) => r.includes(frag));
     ["Sparkling Spring Water, 12-Pack", 12],
     ["Vitamin D3 Softgels, 120 Count", 120],
     ["Cold Brew Coffee Concentrate, 6 x 12 oz Bottles", 6],
+    // v2 shapes — REAL titles from the first post-deploy production
+    // evaluate batch (2026-10-16) that v1 missed and wrongly scored
+    // as single units:
+    ["Aura Cacia Ginger/Mint Aromatherapy Mist, 4 Ounce - 6 per case.6", 6],
+    ["Equal Exchange Organic Mint Crunch Dark Chocolate Bar, 2.8 Ounce -- 12 per case.", 12],
+    ["Equal Exchange Organic Colombian Drip Ground Coffee, 12 Ounce - 6 per case.6", 6],
+    ["Theo Chocolate Organic Salted Almond 70 Percentage Dark Chocolate Bar, 3 Ounce - 12 per case.", 12],
+    ["Lily Of The Desert Aloe Vera Gel, 32 Ounce - 6 per case.", 6],
+    ["Nutiva Organic Organic Coconut Oil, 29 Ounce - 6 per case.", 6],
+    ["Maple Valley Organic Maple Syrup Grade A Dark and Robust 1 oz Nips x 96 Wedding Favors/Party Favors/...", 96],
+    ["The Ginger People Organic Grated Ginger Bulk Ready-to-Use 6.7oz 12Pk", 12],
+    ["Lip Balm - Spearmint Lip Smoothee, 24 Units / 0.18 oz", 24],
+    ["Tea Sampler, Box of 20", 20],
+    ["Scented Candle, Set of 3", 3],
+    ["Bar Soap, 4 per box", 4],
+    ["Shampoo, 12 oz x 12", 12],
   ];
   for (const [title, qty] of cases) {
     const d = detectListingPackQty(title);
@@ -81,6 +100,20 @@ const hasReason = (ev, frag) => ev.reasons.some((r) => r.includes(frag));
     `got ${packOfOne.packQty}/${packOfOne.confidence}`);
   const noTitle = detectListingPackQty(null);
   check("default: null title → 1 / none", noTitle.packQty === 1 && noTitle.confidence === "none");
+  // v2 negative controls — real production titles with NO pack
+  // declaration; bare sizes and stray digit strings must never fire:
+  const nagChampa = detectListingPackQty("Nag Champa Incense");
+  check("default: 'Nag Champa Incense' → 1 / none", nagChampa.packQty === 1 && nagChampa.confidence === "none",
+    `got ${nagChampa.packQty}/${nagChampa.confidence}`);
+  const emerita = detectListingPackQty("Emerita Cream Body Phytoestrogen");
+  check("default: 'Emerita Cream Body Phytoestrogen' → 1 / none", emerita.packQty === 1 && emerita.confidence === "none",
+    `got ${emerita.packQty}/${emerita.confidence}`);
+  const beefSticks = detectListingPackQty("Vermont Smoke 2410563 Premium Beef Sticks 6 oz");
+  check("default: bare size + SKU digits → 1 / none", beefSticks.packQty === 1 && beefSticks.confidence === "none",
+    `got ${beefSticks.packQty}/${beefSticks.confidence} (${beefSticks.evidence})`);
+  const packOfOneJoe = detectListingPackQty("Wicked Joe Coffee Wicked Italian Ground Coffee, 12 Ounce (Pack of 1)");
+  check("default: Wicked Joe (Pack of 1) → 1 but explicit", packOfOneJoe.packQty === 1 && packOfOneJoe.confidence === "explicit",
+    `got ${packOfOneJoe.packQty}/${packOfOneJoe.confidence}`);
 }
 
 // --- The five fixtures: normalized unit price + economics gate ----------------------
@@ -108,6 +141,16 @@ for (const [name, upc, , amazonPrice, title, expected] of FIXTURES) {
   }
 }
 {
+  // v2 end-to-end: a "per case" title normalizes the price basis
+  // (Aura Cacia mist: $79.16 buys a case of 6 → $13.19 per unit).
+  const aura = analyzeListingPack({
+    listingTitle: "Aura Cacia Ginger/Mint Aromatherapy Mist, 4 Ounce - 6 per case.6",
+    upc: null,
+    amazonPrice: 79.16,
+  });
+  check("v2 fixture Aura Cacia: per-case → unit price $13.19",
+    aura.status === "ok" && aura.packQty === 6 && near(aura.unitAmazonPrice, 13.19),
+    `got ${aura.status}/${aura.packQty}/${aura.unitAmazonPrice}`);
   const refused = normalizeEconomics({ amazonPrice: 38.30, packQty: 6, upcKind: "case_gtin14" });
   check("normalizeEconomics: case_gtin14 → refused, no unit price",
     refused.status === "unverified_case_upc" && refused.unitAmazonPrice === null);
@@ -193,3 +236,4 @@ for (const [name, upc, cost, amazonPrice, title, expected] of FIXTURES) {
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail > 0 ? 1 : 0);
+
