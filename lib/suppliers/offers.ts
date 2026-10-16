@@ -17,6 +17,14 @@ import {
   estimateSupplierNet,
   type SupplierOffer,
 } from "./petraCore";
+import {
+  PRICE_ATTEMPT_MAX,
+  PRICE_ATTEMPT_SPACING_MS,
+  PRICE_SCAN_DEFAULT_CAP,
+  PRICE_SCAN_MAX_CAP,
+  PRICE_SCAN_OVERSAMPLE,
+  pickPricingBatch,
+} from "./pricingCore";
 
 const UPSERT_CHUNK = 500;
 
@@ -28,6 +36,10 @@ interface OfferRow {
   cost_price: number | string;
   product_class: string | null;
   subcategory: string | null;
+  // Pricing-attempt state (migration 024) — only the pricing pass
+  // selects/stamps these; other passes leave them absent.
+  price_attempts?: number | null;
+  price_attempted_at?: string | null;
 }
 
 function offerToRow(supplier: string, o: SupplierOffer, nowIso: string) {
@@ -236,52 +248,130 @@ export async function matchPendingSupplierOffers(
 }
 
 // ---------------------------------------------------------------------------
-// Pricing pass: for matched offers not yet priced, fetch the live Amazon
-// landed price (same SP-API pricing client the verification scan uses) and
-// store it with the estimated net/margin from the pure core. Offers whose
-// price lookup comes back unknown are left unpriced (priced_at stays null)
-// so a later pass retries them — unknown is never stored as zero.
+// Pricing pass: for matched offers with no stored Amazon price, fetch the
+// live Amazon landed price (same SP-API pricing client the verification
+// scan uses) and store it with the estimated net/margin from the pure
+// core. An unknown price is never stored as zero: the offer stays
+// unpriced (amazon_price and priced_at stay null) — but the ATTEMPT is
+// persisted (price_attempts / price_attempted_at, migration 024) and the
+// selection policy in lib/suppliers/pricingCore.ts rotates the offer
+// behind every fresher one, spaces retries by 24h, and removes it from
+// the rotation after PRICE_ATTEMPT_MAX no-price attempts. Earlier this
+// pass wrote nothing on a no-price lookup and re-selected by
+// first_seen_at, so the same no-price offers head-of-line blocked every
+// call (the Frontier drain livelock: processed=100 / priced +0 forever).
 // ---------------------------------------------------------------------------
 
 export interface PriceOffersResult {
   processed: number;
   priced: number;
   skipped: number;
+  /** Unpriced offers held back by the per-offer attempt spacing gap. */
+  deferred: number;
+  /** Unpriced offers that used up their no-price attempt budget. */
+  exhausted: number;
   errors: string[];
 }
 
 export async function priceMatchedSupplierOffers(
   supplier: string,
-  cap = 100
+  cap = PRICE_SCAN_DEFAULT_CAP
 ): Promise<PriceOffersResult> {
-  const result: PriceOffersResult = { processed: 0, priced: 0, skipped: 0, errors: [] };
+  const result: PriceOffersResult = {
+    processed: 0,
+    priced: 0,
+    skipped: 0,
+    deferred: 0,
+    exhausted: 0,
+    errors: [],
+  };
   const cfg = spApiConfigFromEnv(process.env);
   if (!cfg) {
     result.errors.push("SP-API not configured — pricing skipped.");
     return result;
   }
+  const batchCap = Math.max(1, Math.min(cap, PRICE_SCAN_MAX_CAP));
   const admin = getSupabaseAdmin();
+  const nowMs = Date.now();
+  const spacingCutoffIso = new Date(nowMs - PRICE_ATTEMPT_SPACING_MS).toISOString();
+
+  // Candidate pool: matched, has an ASIN, no stored price, attempt budget
+  // left — least-recently-attempted first (never-attempted first), so
+  // retries can never outrank fresh offers.
   const { data, error } = await admin
     .from("supplier_offers")
-    .select("id, supplier_sku, matched_asin, cost_price, product_class, subcategory")
+    .select(
+      "id, supplier_sku, matched_asin, cost_price, product_class, subcategory, price_attempts, price_attempted_at"
+    )
     .eq("supplier", supplier)
     .eq("match_status", "matched")
     .not("matched_asin", "is", null)
-    .is("priced_at", null)
+    .is("amazon_price", null)
+    .lt("price_attempts", PRICE_ATTEMPT_MAX)
+    .order("price_attempted_at", { ascending: true, nullsFirst: true })
     .order("first_seen_at", { ascending: true })
-    .limit(Math.max(1, Math.min(cap, 200)));
+    .limit(batchCap * PRICE_SCAN_OVERSAMPLE);
   if (error) {
     result.errors.push(`Could not read matched offers: ${error.message}`);
     return result;
   }
   const rows = (data ?? []) as OfferRow[];
 
+  // Exact pool-wide drain accounting, independent of the fetch window:
+  // how many unpriced offers are waiting out their spacing gap, and how
+  // many are out of the rotation for good.
+  const poolBase = () =>
+    admin
+      .from("supplier_offers")
+      .select("id", { count: "exact", head: true })
+      .eq("supplier", supplier)
+      .eq("match_status", "matched")
+      .not("matched_asin", "is", null)
+      .is("amazon_price", null);
+  const [deferredRes, exhaustedRes] = await Promise.all([
+    poolBase()
+      .lt("price_attempts", PRICE_ATTEMPT_MAX)
+      .gte("price_attempted_at", spacingCutoffIso),
+    poolBase().gte("price_attempts", PRICE_ATTEMPT_MAX),
+  ]);
+  result.deferred = deferredRes.count ?? 0;
+  result.exhausted = exhaustedRes.count ?? 0;
+
+  const batch = pickPricingBatch(
+    rows.map((row) => ({
+      row,
+      priceAttempts: typeof row.price_attempts === "number" ? row.price_attempts : 0,
+      priceAttemptedAt: row.price_attempted_at ?? null,
+    })),
+    batchCap,
+    nowMs
+  );
+
+  // Persist a no-price attempt so the offer rotates to the back of the
+  // queue (and eventually out of it) instead of being re-picked first on
+  // the next call. A stamp failure is surfaced, never hidden.
+  const stampAttempt = async (candidate: (typeof batch)[number]): Promise<void> => {
+    const { error: stampErr } = await admin
+      .from("supplier_offers")
+      .update({
+        price_attempts: candidate.priceAttempts + 1,
+        price_attempted_at: new Date().toISOString(),
+      })
+      .eq("id", candidate.row.id);
+    if (stampErr) {
+      result.errors.push(
+        `${candidate.row.supplier_sku}: could not record pricing attempt: ${stampErr.message}`
+      );
+    }
+  };
+
   // Pricing tolerates a tighter pace than Catalog lookups; the throttle
   // still backs off and retries on 429/5xx.
   const throttle = new SpApiThrottle({ minIntervalMs: 1000 });
   const spFetch: typeof fetch = (input, init) => throttle.fetch(input, init, fetch);
 
-  for (const row of rows) {
+  for (const candidate of batch) {
+    const row = candidate.row;
     result.processed++;
     try {
       const live = await getLiveSellPrice(cfg, row.matched_asin ?? "", spFetch);
@@ -290,6 +380,7 @@ export async function priceMatchedSupplierOffers(
         if (result.errors.length < 5) {
           result.errors.push(`${row.supplier_sku}: ${live.reason}`);
         }
+        await stampAttempt(candidate);
         continue;
       }
       const estimate = estimateSupplierNet(
@@ -319,6 +410,7 @@ export async function priceMatchedSupplierOffers(
       result.errors.push(
         `${row.supplier_sku}: pricing failed: ${e instanceof Error ? e.message : String(e)}`
       );
+      await stampAttempt(candidate);
     }
   }
   return result;
