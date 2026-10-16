@@ -30,12 +30,15 @@
 //      packQty and economics proceed on that basis.
 //
 // CONSERVATISM CONTRACT: packQty defaults to 1. Only explicit textual
-// declarations move it ("Pack of 6", "Case of 12", "12-Pack",
-// "120 Count", "6 x 12 oz"), or an explicit size division (a stated
+// declarations move it ("Pack of 6", "Case of 12", "Box of 12",
+// "12 per case", "12-Pack", "12Pk", "120 Count", "24 Units",
+// "6 x 12 oz", "1 oz x 96"), or an explicit size division (a stated
 // total size divided by a stated unit size). Vague titles ("Family
 // Size", "Value Pack", "Multipack") NEVER move it — they yield
 // packQty 1 with confidence "none", and the caller flags that as
 // low-confidence rather than silently trusting the price.
+// The v2 forms (per-case, box/set-of, Pk, Units, size-x-N) only fire
+// for quantities ≥ 2 — a "1" in those shapes is not pack evidence.
 //
 // KNOWN LIMIT: count-style declarations are ambiguous for goods whose
 // count is intrinsic to one retail unit ("120 Count" capsules are one
@@ -95,19 +98,56 @@ function sanePack(n: number): number | null {
 }
 
 /** Explicit pack declarations, in a fixed pattern priority (not
- * document order): the most specific shapes win. */
-const EXPLICIT_PATTERNS: Array<{ re: RegExp; label: (n: number) => string }> = [
+ * document order): the most specific shapes win. `min` is the smallest
+ * quantity the shape may declare — the v2 shapes (added 2026-10-16
+ * after live titles slipped past v1) require ≥ 2, so a stray "1" in
+ * those shapes is never treated as pack evidence. */
+const EXPLICIT_PATTERNS: Array<{
+  re: RegExp;
+  label: (n: number) => string;
+  min?: number;
+}> = [
   { re: /\bpack\s*of\s*(\d{1,4})\b/i, label: (n) => `Pack of ${n}` },
   { re: /\bcase\s*of\s*(\d{1,4})\b/i, label: (n) => `Case of ${n}` },
+  { re: /\bbox\s*of\s*(\d{1,4})\b/i, label: (n) => `Box of ${n}`, min: 2 },
+  { re: /\bset\s*of\s*(\d{1,4})\b/i, label: (n) => `Set of ${n}`, min: 2 },
+  // "6 per case" / "12 per box" — the wholesale case declaration used
+  // across the Frontier-sourced catalog ("… 4 Ounce - 6 per case.6";
+  // the trailing fragment after "case" is ignored — the regex anchors
+  // on the "N per case" core).
+  {
+    re: /\b(\d{1,4})\s*per\s*case\b/i,
+    label: (n) => `${n} per case`,
+    min: 2,
+  },
+  {
+    re: /\b(\d{1,4})\s*per\s*box\b/i,
+    label: (n) => `${n} per box`,
+    min: 2,
+  },
   { re: /\b(\d{1,4})\s*-\s*pack\b/i, label: (n) => `${n}-Pack` },
   { re: /\b(\d{1,4})\s+pack\b/i, label: (n) => `${n} Pack` },
+  // "12Pk" / "12 Pk" / "12-Pk" — the abbreviated pack form
+  // ("… Grated Ginger 6.7oz 12Pk").
+  { re: /\b(\d{1,4})[\s-]?pk\b/i, label: (n) => `${n}Pk`, min: 2 },
   { re: /\b(\d{1,4})\s*-\s*count\b/i, label: (n) => `${n}-Count` },
   { re: /\b(\d{1,4})\s+count\b/i, label: (n) => `${n} Count` },
   { re: /\bcount\s*[:of]*\s*(\d{1,4})\b/i, label: (n) => `Count: ${n}` },
+  // "24 Units" ("Lip Balm …, 24 Units / 0.18 oz").
+  { re: /\b(\d{1,4})\s+units?\b/i, label: (n) => `${n} Units`, min: 2 },
   // "6 x 12 oz" — an explicit multiplication of units × unit size.
   {
     re: /\b(\d{1,4})\s*[x×]\s*\d+(?:\.\d+)?\s*(?:fl\.?\s*oz|oz|lb|lbs|g|kg|ml|l)\b/i,
     label: (n) => `${n} x (unit size)`,
+  },
+  // "1 oz Nips x 96" / "12 oz x 12" — the reversed multiplication:
+  // unit size first, then a standalone "x" and the unit count. Up to
+  // two words may sit between the size and the "x" ("Nips"); a bare
+  // size with no "x N" after it can never match.
+  {
+    re: /\b\d+(?:\.\d+)?\s*(?:fl\.?\s*oz|fluid\s*ounces?|ounces?|oz|lbs?|lb|kg|ml|g|l)\b(?:\s+[a-z][a-z'-]*){0,2}?\s+[x×]\s*(\d{1,4})\b/i,
+    label: (n) => `(unit size) x ${n}`,
+    min: 2,
   },
 ];
 
@@ -205,11 +245,11 @@ export function detectListingPackQty(
 ): PackDetection {
   const title = typeof listingTitle === "string" ? listingTitle : "";
   if (title.trim()) {
-    for (const { re, label } of EXPLICIT_PATTERNS) {
+    for (const { re, label, min } of EXPLICIT_PATTERNS) {
       const m = re.exec(title);
       if (!m) continue;
       const qty = sanePack(Number(m[1]));
-      if (qty === null) continue;
+      if (qty === null || qty < (min ?? 1)) continue;
       return {
         packQty: qty,
         confidence: "explicit",
@@ -313,3 +353,4 @@ export function analyzeListingPack(input: {
     evidence,
   };
 }
+
