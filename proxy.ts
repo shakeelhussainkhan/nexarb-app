@@ -72,6 +72,13 @@ const isPublicRoute = createRouteMatcher([
 //                                 Offer Expected Price hints for Amazon
 //                                 listings; advisory only — repricing
 //                                 itself stays session-only, NOT bypassed)
+//   /api/deals                  — GET resolveUser with the session-only
+//                                 rule enforced in the handler (API keys
+//                                 rejected): bypassed so the mobile app's
+//                                 Clerk Bearer token can reach resolveUser
+//                                 — the middleware session gate cannot see
+//                                 Bearer tokens. (/api/deals/[asin] is NOT
+//                                 bypassed and stays middleware-gated.)
 // NOT included: /api/suppliers/promote (session-only founder decision,
 // enforced in the handler like /api/approvals POST),
 // /api/purchases/[id]/approve (approvals stay session-gated here AND in
@@ -109,6 +116,7 @@ const API_KEY_PATH_RES: RegExp[] = [
   /^\/api\/orders\/external\/[^/]+\/milestones$/,
   /^\/api\/dashboard\/metrics$/,
   /^\/api\/listings\/foep$/,
+  /^\/api\/deals$/,
 ]
 
 export default clerkMiddleware(async (auth, request) => {
@@ -126,4 +134,5 @@ export const config = {
     '/(api|trpc)(.*)',
   ],
 }
+
 

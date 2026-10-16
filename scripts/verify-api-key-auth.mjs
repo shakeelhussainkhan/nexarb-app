@@ -1,7 +1,7 @@
 // Offline harness for API-key-or-session auth (lib/auth/apiKeyCore.ts).
 // Run: node --loader ./scripts/alias-loader.mjs scripts/verify-api-key-auth.mjs
 // Pure-logic tests — NO network, NO database. Lookup + session are fakes.
-import { decideAuth, keyMayCheckoutAction } from "@/lib/auth/apiKeyCore.ts";
+import { bearerTokenFromHeader, decideAuth, keyMayCheckoutAction } from "@/lib/auth/apiKeyCore.ts";
 import { generateApiKey, hashApiKey } from "@/lib/extension/keys.ts";
 
 let pass = 0;
@@ -20,8 +20,8 @@ const { plaintext, hash } = generateApiKey();
 const ROW = { id: "key-1", user_id: "user_shakeel", revoked_at: null };
 const REVOKED = { id: "key-2", user_id: "user_shakeel", revoked_at: "2026-10-01T00:00:00Z" };
 
-function deps({ row = null, session = null, lookupThrows = false, used = [] } = {}) {
-  return {
+function deps({ row = null, session = null, lookupThrows = false, used = [], bearer = undefined, bearerThrows = false } = {}) {
+  const d = {
     lookupKeyByHash: async (h) => {
       if (lookupThrows) throw new Error("db down");
       return h === hash ? row : null;
@@ -29,6 +29,16 @@ function deps({ row = null, session = null, lookupThrows = false, used = [] } = 
     sessionUserId: async () => session,
     onKeyUsed: (id) => used.push(id),
   };
+  // bearer: undefined → no verifier wired; otherwise a fake verifier that
+  // accepts exactly the token "good-token" and maps it to the given user id
+  // (null → every token fails verification).
+  if (bearer !== undefined) {
+    d.verifyBearerToken = async (t) => {
+      if (bearerThrows) throw new Error("jwks down");
+      return t === "good-token" ? bearer : null;
+    };
+  }
+  return d;
 }
 
 // --- Key path ---------------------------------------------------------------
@@ -73,6 +83,43 @@ function deps({ row = null, session = null, lookupThrows = false, used = [] } = 
   const out = await decideAuth("", deps({ session: null }));
   check("empty key + no session → reject", out.kind === "reject");
 }
+
+// --- Bearer token path (mobile app: verified Clerk token == session) --------
+{
+  const out = await decideAuth(null, deps({ bearer: "user_mobile" }), "good-token");
+  check("valid bearer → session identity", out.kind === "identity" && out.via === "session" && out.userId === "user_mobile");
+}
+{
+  const out = await decideAuth(null, deps({ bearer: "user_mobile", session: "user_shakeel" }), "bad-token");
+  check("invalid bearer → reject (no cookie-session fallback)", out.kind === "reject");
+}
+{
+  const out = await decideAuth(null, deps({ bearer: "user_mobile", bearerThrows: true, session: "user_shakeel" }), "good-token");
+  check("verifier failure with bearer presented → reject", out.kind === "reject");
+}
+{
+  const out = await decideAuth(null, deps({ session: "user_shakeel" }), "good-token");
+  check("bearer presented but no verifier wired → reject", out.kind === "reject");
+}
+{
+  const out = await decideAuth("not-a-key", deps({ bearer: "user_mobile" }), "good-token");
+  check("malformed key ignored → bearer decides", out.kind === "identity" && out.via === "session" && out.userId === "user_mobile");
+}
+{
+  const wrong = generateApiKey().plaintext;
+  const out = await decideAuth(wrong, deps({ row: ROW, bearer: "user_mobile" }), "good-token");
+  check("plausible wrong key + valid bearer → reject (key decides first)", out.kind === "reject");
+}
+{
+  const out = await decideAuth(plaintext, deps({ row: ROW, bearer: "user_mobile" }), "bad-token");
+  check("valid key + invalid bearer → api-key identity (key decides first)", out.kind === "identity" && out.via === "api-key" && out.userId === "user_shakeel");
+}
+
+// --- Authorization header parsing ---------------------------------------------
+check("header: 'Bearer abc' → token", bearerTokenFromHeader("Bearer abc") === "abc");
+check("header: scheme is case-insensitive", bearerTokenFromHeader("bearer abc") === "abc");
+check("header: non-Bearer scheme → null", bearerTokenFromHeader("Basic abc") === null);
+check("header: missing/empty token → null", bearerTokenFromHeader("Bearer ") === null && bearerTokenFromHeader("") === null && bearerTokenFromHeader(null) === null);
 
 // --- Checkout action gate ------------------------------------------------------
 check("session may request", keyMayCheckoutAction("session", "request") === true);
