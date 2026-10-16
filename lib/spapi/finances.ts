@@ -1,4 +1,4 @@
-// SP-API Orders v0 + Finances v0 — sales / fees / disbursement sync.
+// SP-API Orders v2026-01-01 + Finances v0 — sales / fees / disbursement sync.
 //
 // Transport + Supabase writes for the Money module. All mapping rules
 // live in the pure core (lib/spapi/financesCore.ts); this file only
@@ -25,9 +25,11 @@ import {
   buildPayoutRows,
   buildSaleRows,
   extractFeeLines,
+  mapOrders2026,
   resolveWindow,
   type SpEventGroupLite,
   type SpFinancialEventsLite,
+  type SpOrder2026,
   type SpOrderItemLite,
   type SpOrderLite,
 } from "./financesCore";
@@ -56,9 +58,10 @@ type SpGetResult = { ok: true; data: Record<string, unknown> } | { ok: false; er
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /**
- * One SP-API GET. On 429, waits and retries exactly once (Orders and
- * Finances v0 rate limits are low). Any other failure returns the
- * status + Amazon's own error body excerpt — never a paraphrase.
+ * One SP-API GET. On 429, waits and retries exactly once (Orders
+ * v2026-01-01 and Finances v0 rate limits are low). Any other failure
+ * returns the status + Amazon's own error body excerpt — never a
+ * paraphrase.
  */
 async function spApiGet(
   cfg: SpApiConfig,
@@ -97,57 +100,50 @@ interface Paged<T> {
   truncated: boolean; // a NextToken remained when the page guard stopped us
 }
 
+/**
+ * Orders v2026-01-01 `searchOrders` — one consolidated call replaces
+ * v0's getOrders + per-order getOrderItems: items ride on each order
+ * when `includedData` asks for them. FULFILLMENT carries the order
+ * status and per-item fulfilled quantities; PROCEEDS carries the
+ * per-item ITEM breakdown that maps to v0's ItemPrice. The response
+ * body has NO `payload` wrapper (unlike v0) — it IS
+ * { orders, pagination: { nextToken } }. Pages are translated to the
+ * lite contract by the pure core (mapOrders2026) as they arrive.
+ */
 async function fetchOrders(
   cfg: SpApiConfig,
   token: string,
   window: { fromIso: string; toIso: string },
   maxPages: number,
   fetchFn: FetchFn
-): Promise<{ ok: true; page: Paged<SpOrderLite> } | { ok: false; error: string }> {
-  const items: SpOrderLite[] = [];
-  let nextToken: string | undefined;
-  let pages = 0;
-  do {
-    const qs = new URLSearchParams({
-      MarketplaceIds: cfg.marketplaceId,
-      CreatedAfter: window.fromIso,
-      CreatedBefore: window.toIso,
-      OrderStatuses: "Shipped,PartiallyShipped",
-      MaxResultsPerPage: "100",
-    });
-    if (nextToken) qs.set("NextToken", nextToken);
-    const res = await spApiGet(cfg, token, `/orders/v0/orders?${qs}`, fetchFn);
-    if (!res.ok) return res;
-    const payload = (res.data.payload ?? {}) as { Orders?: SpOrderLite[]; NextToken?: string };
-    items.push(...(payload.Orders ?? []));
-    nextToken = payload.NextToken;
-    pages++;
-  } while (nextToken && pages < maxPages);
-  return { ok: true, page: { items, truncated: Boolean(nextToken) } };
-}
-
-async function fetchOrderItems(
-  cfg: SpApiConfig,
-  token: string,
-  orderId: string,
-  maxPages: number,
-  fetchFn: FetchFn
-): Promise<{ ok: true; items: SpOrderItemLite[] } | { ok: false; error: string }> {
+): Promise<
+  | { ok: true; orders: SpOrderLite[]; items: SpOrderItemLite[]; truncated: boolean }
+  | { ok: false; error: string }
+> {
+  const orders: SpOrderLite[] = [];
   const items: SpOrderItemLite[] = [];
   let nextToken: string | undefined;
   let pages = 0;
   do {
-    const qs = new URLSearchParams();
-    if (nextToken) qs.set("NextToken", nextToken);
-    const path = `/orders/v0/orders/${encodeURIComponent(orderId)}/orderItems${qs.toString() ? `?${qs}` : ""}`;
-    const res = await spApiGet(cfg, token, path, fetchFn);
+    const qs = new URLSearchParams({
+      marketplaceIds: cfg.marketplaceId,
+      createdAfter: window.fromIso,
+      createdBefore: window.toIso,
+      fulfillmentStatuses: "SHIPPED,PARTIALLY_SHIPPED",
+      includedData: "FULFILLMENT,PROCEEDS",
+      maxResultsPerPage: "100",
+    });
+    if (nextToken) qs.set("paginationToken", nextToken);
+    const res = await spApiGet(cfg, token, `/orders/2026-01-01/orders?${qs}`, fetchFn);
     if (!res.ok) return res;
-    const payload = (res.data.payload ?? {}) as { OrderItems?: SpOrderItemLite[]; NextToken?: string };
-    for (const it of payload.OrderItems ?? []) items.push({ ...it, AmazonOrderId: orderId });
-    nextToken = payload.NextToken;
+    const body = res.data as unknown as { orders?: SpOrder2026[]; pagination?: { nextToken?: string } };
+    const mapped = mapOrders2026(body.orders ?? []);
+    orders.push(...mapped.orders);
+    items.push(...mapped.items);
+    nextToken = body.pagination?.nextToken;
     pages++;
   } while (nextToken && pages < maxPages);
-  return { ok: true, items };
+  return { ok: true, orders, items, truncated: Boolean(nextToken) };
 }
 
 async function fetchFinancialEvents(
@@ -231,10 +227,10 @@ const DEFAULT_MAX_PAGES = 20;
 const DEFAULT_MAX_ORDERS = 250;
 
 /**
- * Run one bounded ingestion pass. Fetches orders → items → financial
- * events → event groups; only when EVERY fetch succeeded does it write
- * (idempotent upserts). Any SP-API failure aborts with the upstream
- * error in `errors` and zero writes.
+ * Run one bounded ingestion pass. Fetches orders (items embedded via
+ * searchOrders) → financial events → event groups; only when EVERY
+ * fetch succeeded does it write (idempotent upserts). Any SP-API
+ * failure aborts with the upstream error in `errors` and zero writes.
  */
 export async function syncFinances(
   cfg: SpApiConfig,
@@ -266,9 +262,9 @@ export async function syncFinances(
   // --- Fetch phase (no writes yet) -------------------------------------------
   const ordersRes = await fetchOrders(cfg, token, window, maxPages, fetchFn);
   if (!ordersRes.ok) return { ...base, errors: [ordersRes.error] };
-  const allOrders = ordersRes.page.items;
+  const allOrders = ordersRes.orders;
   base.ordersSeen = allOrders.length;
-  if (ordersRes.page.truncated) {
+  if (ordersRes.truncated) {
     base.warnings.push(`Orders list truncated at ${maxPages} pages — narrow the window or raise maxPages.`);
   }
   const orders = allOrders.slice(0, maxOrders);
@@ -276,17 +272,16 @@ export async function syncFinances(
     base.warnings.push(`Processing the first ${orders.length} of ${allOrders.length} orders (maxOrders cap); re-run to continue.`);
   }
 
-  const allItems: SpOrderItemLite[] = [];
+  // Items arrive embedded in each order (searchOrders includedData) —
+  // there are no per-order item calls anymore. Items belonging to
+  // orders beyond the maxOrders cap drop out with their orders.
+  const processedOrderIds = new Set(orders.map((o) => o.AmazonOrderId));
+  const allItems = ordersRes.items.filter((it) => it.AmazonOrderId && processedOrderIds.has(it.AmazonOrderId));
   const asinByOrderItemId: Record<string, string> = {};
   const asinBySku: Record<string, string> = {};
-  for (const order of orders) {
-    const itemsRes = await fetchOrderItems(cfg, token, order.AmazonOrderId, maxPages, fetchFn);
-    if (!itemsRes.ok) return { ...base, errors: [itemsRes.error] };
-    for (const it of itemsRes.items) {
-      allItems.push(it);
-      if (it.OrderItemId && it.ASIN) asinByOrderItemId[it.OrderItemId] = it.ASIN;
-      if (it.SellerSKU && it.ASIN) asinBySku[it.SellerSKU] = it.ASIN;
-    }
+  for (const it of allItems) {
+    if (it.OrderItemId && it.ASIN) asinByOrderItemId[it.OrderItemId] = it.ASIN;
+    if (it.SellerSKU && it.ASIN) asinBySku[it.SellerSKU] = it.ASIN;
   }
 
   const eventsRes = await fetchFinancialEvents(cfg, token, window, maxPages, fetchFn);

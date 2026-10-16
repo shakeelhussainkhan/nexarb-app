@@ -4,6 +4,8 @@
 // (Node 23 strips types); the core has no imports of its own.
 import {
   moneyAmount,
+  moneyAmount2026,
+  mapOrders2026,
   round2,
   resolveWindow,
   saleKey,
@@ -175,6 +177,108 @@ check("payouts: bank tail is never invented (always null from Finances v0)",
   payouts.rows.every((r) => r.bankTail === null));
 check("payouts: skips are counted and duplicates deduped",
   payouts.skippedNoId === 1 && payouts.skippedNoAmount === 1 && payouts.rows.length === 2);
+
+// 7. Orders v2026-01-01 translation (mapOrders2026). Fixtures are
+// excerpted from the searchOrders example response embedded in
+// Amazon's OFFICIAL orders_2026-01-01 model
+// (amzn/selling-partner-api-models, models/orders-api-model):
+// order 123-4567890-1234567, Echo Dot x2 (ITEM subtotal 99.98) +
+// Fire TV Stick x1 (ITEM subtotal 49.99), fulfillmentStatus SHIPPED.
+check("moneyAmount2026 parses the new {amount, currencyCode} shape",
+  moneyAmount2026({ amount: "19.99", currencyCode: "USD" }) === 19.99
+  && moneyAmount2026({ amount: 4.5 }) === 4.5
+  && moneyAmount2026(undefined) === null && moneyAmount2026({}) === null);
+
+const orders2026 = [
+  {
+    orderId: "123-4567890-1234567",
+    createdTime: "2024-12-25T10:30:00Z",
+    fulfillment: { fulfillmentStatus: "SHIPPED", fulfilledBy: "MERCHANT" },
+    orderItems: [
+      {
+        orderItemId: "12345678901234",
+        quantityOrdered: 2,
+        product: { asin: "B08N5WRWNW", sellerSku: "ECHO-DOT-4-CHARCOAL" },
+        proceeds: { breakdowns: [
+          { type: "ITEM", subtotal: { amount: "99.98", currencyCode: "USD" } },
+          { type: "TAX", subtotal: { amount: "0.02", currencyCode: "USD" } },
+        ] },
+        fulfillment: { quantityFulfilled: 2, quantityUnfulfilled: 0 },
+      },
+      {
+        orderItemId: "12345678901235",
+        quantityOrdered: 1,
+        product: { asin: "B07XJ8C8F5", sellerSku: "FIRE-TV-4K-2021" },
+        proceeds: { breakdowns: [
+          { type: "ITEM", subtotal: { amount: "49.99", currencyCode: "USD" } },
+        ] },
+        fulfillment: { quantityFulfilled: 1, quantityUnfulfilled: 0 },
+      },
+    ],
+  },
+];
+const mapped = mapOrders2026(orders2026);
+check("mapOrders2026: order id/date map and status re-cases to the lite vocabulary",
+  mapped.orders.length === 1
+  && mapped.orders[0].AmazonOrderId === "123-4567890-1234567"
+  && mapped.orders[0].PurchaseDate === "2024-12-25T10:30:00Z"
+  && mapped.orders[0].OrderStatus === "Shipped");
+check("mapOrders2026: item fields map; ItemPrice is the ITEM breakdown only (TAX excluded)",
+  mapped.items.length === 2
+  && mapped.items[0].ASIN === "B08N5WRWNW" && mapped.items[0].SellerSKU === "ECHO-DOT-4-CHARCOAL"
+  && mapped.items[0].QuantityOrdered === 2 && mapped.items[0].QuantityShipped === 2
+  && approx(moneyAmount(mapped.items[0].ItemPrice) ?? -1, 99.98)
+  && mapped.items[0].AmazonOrderId === "123-4567890-1234567");
+check("mapOrders2026 -> buildSaleRows: official example yields both rows at $49.99/unit", (() => {
+  const r = buildSaleRows(mapped.orders, mapped.items);
+  const a = r.rows.find((x) => x.asin === "B08N5WRWNW");
+  const b = r.rows.find((x) => x.asin === "B07XJ8C8F5");
+  return r.rows.length === 2 && a && a.qty === 2 && approx(a.unitPrice, 49.99)
+    && b && b.qty === 1 && approx(b.unitPrice, 49.99)
+    && a.soldAt === "2024-12-25T10:30:00Z";
+})());
+
+const cancelled2026 = mapOrders2026([
+  { orderId: "C1", createdTime: "2026-10-01T00:00:00Z", fulfillment: { fulfillmentStatus: "CANCELLED" },
+    orderItems: [{ orderItemId: "ci1", quantityOrdered: 1, product: { asin: "B0CCCCCCC3" },
+      proceeds: { breakdowns: [{ type: "ITEM", subtotal: { amount: "5.00", currencyCode: "USD" } }] },
+      fulfillment: { quantityFulfilled: 0 } }] },
+]);
+check("mapOrders2026: CANCELLED re-cases to Canceled and buildSaleRows skips it",
+  cancelled2026.orders[0].OrderStatus === "Canceled"
+  && buildSaleRows(cancelled2026.orders, cancelled2026.items).stats.skippedCanceled === 1
+  && buildSaleRows(cancelled2026.orders, cancelled2026.items).rows.length === 0);
+
+const partial2026 = mapOrders2026([
+  { orderId: "P1", createdTime: "2026-10-02T00:00:00Z", fulfillment: { fulfillmentStatus: "PARTIALLY_SHIPPED" },
+    orderItems: [{ orderItemId: "pi1", quantityOrdered: 3, product: { asin: "B0DDDDDDD4" },
+      proceeds: { breakdowns: [{ type: "ITEM", subtotal: { amount: "30.00", currencyCode: "USD" } }] },
+      fulfillment: { quantityFulfilled: 1 } }] },
+]);
+check("mapOrders2026: PARTIALLY_SHIPPED keeps fulfilled qty at full unit price", (() => {
+  const r = buildSaleRows(partial2026.orders, partial2026.items);
+  return partial2026.orders[0].OrderStatus === "PartiallyShipped"
+    && r.rows.length === 1 && r.rows[0].qty === 1 && approx(r.rows[0].unitPrice, 10.0);
+})());
+
+const noItemBreakdown2026 = mapOrders2026([
+  { orderId: "N1", createdTime: "2026-10-03T00:00:00Z", fulfillment: { fulfillmentStatus: "SHIPPED" },
+    orderItems: [{ orderItemId: "ni1", quantityOrdered: 1, product: { asin: "B0FFFFFFF6" },
+      proceeds: { breakdowns: [{ type: "TAX", subtotal: { amount: "1.00", currencyCode: "USD" } }] },
+      fulfillment: { quantityFulfilled: 1 } }] },
+]);
+check("mapOrders2026: no ITEM breakdown -> missing price (never an invented $0)",
+  noItemBreakdown2026.items[0].ItemPrice === undefined
+  && buildSaleRows(noItemBreakdown2026.orders, noItemBreakdown2026.items).stats.itemsMissingPrice === 1);
+
+const noFulfillment2026 = mapOrders2026([
+  { orderId: "F1", createdTime: "2026-10-04T00:00:00Z", fulfillment: { fulfillmentStatus: "SHIPPED" },
+    orderItems: [{ orderItemId: "fi1", quantityOrdered: 2, product: { asin: "B0GGGGGGG7" },
+      proceeds: { breakdowns: [{ type: "ITEM", subtotal: { amount: "20.00", currencyCode: "USD" } }] } }] },
+]);
+check("mapOrders2026: absent item fulfillment leaves QuantityShipped undefined; core falls back to ordered qty",
+  noFulfillment2026.items[0].QuantityShipped === undefined
+  && buildSaleRows(noFulfillment2026.orders, noFulfillment2026.items).rows[0]?.qty === 2);
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
