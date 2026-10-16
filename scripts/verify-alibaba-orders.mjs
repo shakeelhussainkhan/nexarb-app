@@ -14,6 +14,11 @@ import {
   mapAlibabaOrderStatus,
   buildFreightRequest,
   pickFreightSolution,
+  listFreightSolutions,
+  selectDdpFreightSolution,
+  planPlacementFreight,
+  noDdpFreightReason,
+  mergeStatusRaw,
   freightGuard,
   buildCreateRequest,
   parseCreateResponse,
@@ -272,6 +277,131 @@ check("freight pick: garbage -> null", pickFreightSolution({ nope: true }) === n
 check(
   "freight pick: top-level value[] shape also parses",
   pickFreightSolution({ value: [{ vendor_code: "V1", fee: { amount: 3 } }] })?.carrierCode === "V1"
+);
+
+// --- DDP selection policy: drafts + placement share ONE helper (2026-10-15) --------
+// Live incident: ornaments AO-MVA7QIPN-1 failed create twice with
+// [ISP/800022] "The import charges is empty" because cheapest-regardless
+// selection picked a solution without DDP import charges. Policy now:
+// cheapest DDP wins; no DDP on offer = a distinct refusal, never a
+// silent fall back to the cheaper non-DDP solution.
+
+// The cubes order's live freight shape (PR #70 draft quote + placement):
+// DDP ocean $388.11 beat DDP express $1,502.96 — baseline preserved.
+const cubesFreightResp = {
+  result: {
+    value: [
+      { vendor_code: "ALI_BRAND_EXPRESS", fee: { amount: 1502.96, currency: "USD" }, delivery_time: "8-13", vendor_name: "Express", trade_term: "DDP" },
+      { vendor_code: "ALI_BRAND_OCEAN_US_STANDARD_DDP", fee: { amount: 388.11, currency: "USD" }, delivery_time: "29-40", vendor_name: "Ocean", trade_term: "DDP" },
+    ],
+  },
+};
+const cubesSel = selectDdpFreightSolution(cubesFreightResp);
+check(
+  "ddp select: cubes numbers — cheapest DDP wins (ocean $388.11, term parsed)",
+  cubesSel.kind === "selected" && cubesSel.solution.carrierCode === "ALI_BRAND_OCEAN_US_STANDARD_DDP" && cubesSel.solution.freightFee === 388.11 && cubesSel.solution.tradeTerm === "DDP" && cubesSel.solution.deliveryTime === "29-40",
+  JSON.stringify(cubesSel)
+);
+const cubesPlan = planPlacementFreight(cubesFreightResp);
+check(
+  "ddp plan: cubes response -> create with the DDP ocean solution",
+  cubesPlan.action === "create" && cubesPlan.solution.carrierCode === "ALI_BRAND_OCEAN_US_STANDARD_DDP" && cubesPlan.solution.freightFee === 388.11,
+  JSON.stringify(cubesPlan)
+);
+
+// Mixed terms: a CHEAPER non-DDP solution must NOT win — that is the
+// exact 800022 trap. The naive pick still returns it (proof the two
+// policies differ and placement no longer uses the naive one).
+const mixedFreightResp = {
+  result: {
+    value: [
+      { vendor_code: "ALI-CHEAP-DAP", fee: { amount: 210.5, currency: "USD" }, delivery_time: "25-35 days", vendor_name: "Sea", trade_term: "DAP" },
+      { vendor_code: "ALI_BRAND_OCEAN_US_STANDARD_DDP", fee: { amount: 388.11, currency: "USD" }, delivery_time: "29-40", vendor_name: "Ocean", trade_term: "DDP" },
+    ],
+  },
+};
+const mixedSel = selectDdpFreightSolution(mixedFreightResp);
+check(
+  "ddp select: cheaper non-DDP ($210.50 DAP) loses to DDP ($388.11)",
+  mixedSel.kind === "selected" && mixedSel.solution.carrierCode === "ALI_BRAND_OCEAN_US_STANDARD_DDP" && mixedSel.solution.freightFee === 388.11,
+  JSON.stringify(mixedSel)
+);
+check(
+  "ddp select: naive cheapest pick would have taken the DAP trap (policies differ)",
+  pickFreightSolution(mixedFreightResp)?.carrierCode === "ALI-CHEAP-DAP"
+);
+check(
+  "ddp plan: mixed response -> create carries the DDP solution both draft + placement use",
+  planPlacementFreight(mixedFreightResp).action === "create" && planPlacementFreight(mixedFreightResp).solution.tradeTerm === "DDP"
+);
+check(
+  "ddp select: trade_term match is case-insensitive ('ddp' selects)",
+  selectDdpFreightSolution({ value: [{ vendor_code: "V-LOW", fee: { amount: 10 }, trade_term: "ddp" }] }).kind === "selected"
+);
+check(
+  "freight list: usable solutions parsed with trade terms (fee-less skipped)",
+  listFreightSolutions(freightResp).length === 2 && listFreightSolutions(mixedFreightResp)[0].tradeTerm === "DAP"
+);
+
+// Only non-DDP on offer: placement refuses BEFORE create, naming terms.
+const noDdpResp = {
+  result: {
+    value: [
+      { vendor_code: "ALI-DAP", fee: { amount: 210.5, currency: "USD" }, trade_term: "DAP" },
+      { vendor_code: "ALI-EXW", fee: { amount: 150.0, currency: "USD" }, trade_term: "EXW" },
+    ],
+  },
+};
+const noDdpSel = selectDdpFreightSolution(noDdpResp);
+check(
+  "ddp select: only non-DDP -> distinct no_ddp outcome listing offered terms",
+  noDdpSel.kind === "no_ddp" && JSON.stringify(noDdpSel.offeredTerms) === JSON.stringify(["DAP", "EXW"]),
+  JSON.stringify(noDdpSel)
+);
+const noDdpPlan = planPlacementFreight(noDdpResp);
+check(
+  "ddp plan: no-DDP -> refuse (no solution to create with — zero create calls by construction)",
+  noDdpPlan.action === "refuse" && !("solution" in noDdpPlan),
+  JSON.stringify(noDdpPlan)
+);
+check(
+  "ddp plan: refusal reason names the missing DDP + the offered terms + wave-1 policy",
+  noDdpPlan.action === "refuse" &&
+    noDdpPlan.reason === "No DDP freight solution offered for this order (offered terms: DAP, EXW) — placement requires DDP per wave-1 policy." &&
+    noDdpPlan.reason === noDdpFreightReason(["DAP", "EXW"]),
+  noDdpPlan.action === "refuse" ? noDdpPlan.reason : JSON.stringify(noDdpPlan)
+);
+check(
+  "ddp plan: empty/garbage freight -> refuse with the no-usable-solution reason",
+  planPlacementFreight({ result: { value: [] } }).action === "refuse" &&
+    planPlacementFreight(null).reason === "freight calculate returned no usable shipping solution" &&
+    selectDdpFreightSolution(null).kind === "none"
+);
+
+// --- status-raw merge discipline: failure writes must not clobber -------------------
+// The placement-failure write once REPLACED alibaba_status_raw with
+// {error}, destroying the PR #70 draft freightQuote on both failed
+// wave-1 orders. mergeStatusRaw is the seam every write now uses.
+const rawBefore = {
+  freightQuote: { freightFee: 388.11, carrierCode: "ALI_BRAND_OCEAN_US_STANDARD_DDP", tradeTerm: "DDP", deliveryTime: "29-40", quotedAt: "2026-10-15T21:24:00.342Z" },
+  eligibilityWarning: "benchmark brand block",
+};
+const rawAfterFailure = mergeStatusRaw(rawBefore, {
+  error: "order create failed: Alibaba /buynow/order/create failed [ISP/800022]: The import charges is empty, please refresh and submit again..",
+  placementFailure: { error: "…", carrierCode: "ALI-CHEAP-DAP", tradeTerm: "DAP" },
+});
+check(
+  "raw merge: failure write preserves the draft freightQuote + prior keys",
+  rawAfterFailure.freightQuote?.freightFee === 388.11 &&
+    rawAfterFailure.freightQuote?.carrierCode === "ALI_BRAND_OCEAN_US_STANDARD_DDP" &&
+    rawAfterFailure.eligibilityWarning === "benchmark brand block" &&
+    typeof rawAfterFailure.error === "string" &&
+    rawAfterFailure.placementFailure?.carrierCode === "ALI-CHEAP-DAP",
+  JSON.stringify(rawAfterFailure)
+);
+check(
+  "raw merge: original blob is not mutated; non-object prev degrades to the patch",
+  !("error" in rawBefore) && mergeStatusRaw(null, { a: 1 }).a === 1 && mergeStatusRaw("junk", { a: 2 }).a === 2
 );
 
 // --- freight guard: real freight may not silently reprice an approved order --------

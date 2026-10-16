@@ -16,6 +16,7 @@ import {
   reconcileIntentState,
   updateOrder,
 } from "@/lib/alibaba/orders";
+import { mergeStatusRaw } from "@/lib/alibaba/ordersCore";
 
 // POST /api/alibaba/orders/[id]/place  (session only)
 //
@@ -115,10 +116,26 @@ export async function POST(
   const caps = capsFromEnv(process.env);
   const placed = await placeAlibabaOrder(authRes.cfg, authRes.token, order, caps.perOrderCap);
   if (!placed.ok) {
+    // MERGE the failure record into the stored raw — replacing the blob
+    // here once destroyed the draft-time freightQuote (PR #70) on both
+    // failed wave-1 orders, which is what diagnosis needed most. The
+    // attempted freight solution rides along so the record names what
+    // was tried (carrier/term/fee), not just that it failed.
     const failed = await updateOrder(admin, identity.userId, order.id, {
       status: "failed",
       alibaba_order_id: placed.alibabaOrderId ?? order.alibabaOrderId,
-      alibaba_status_raw: placed.raw ?? { error: placed.error },
+      alibaba_status_raw: mergeStatusRaw(order.alibabaStatusRaw, {
+        error: placed.error ?? "placement failed",
+        placementFailure: {
+          at: new Date().toISOString(),
+          error: placed.error ?? "placement failed",
+          carrierCode: placed.attempted?.carrierCode ?? null,
+          freightFee: placed.attempted?.freightFee ?? null,
+          tradeTerm: placed.attempted?.tradeTerm ?? null,
+          deliveryTime: placed.attempted?.deliveryTime ?? null,
+          raw: placed.raw ?? null,
+        },
+      }),
     });
     return NextResponse.json(
       {
@@ -143,13 +160,15 @@ export async function POST(
   const recorded = await updateOrder(admin, identity.userId, order.id, {
     status: "awaiting_payment",
     alibaba_order_id: placed.alibabaOrderId,
-    alibaba_status_raw: {
+    alibaba_status_raw: mergeStatusRaw(order.alibabaStatusRaw, {
       payUrl: placed.payUrl ?? null,
       freightFee: placed.freightFee ?? null,
       carrierCode: placed.carrierCode ?? null,
+      tradeTerm: placed.tradeTerm ?? null,
+      deliveryTime: placed.deliveryTime ?? null,
       createRaw: placed.raw ?? null,
       placedAt,
-    },
+    }),
     placed_at: placedAt,
   });
   // The order EXISTS on Alibaba now, whether or not the local write works.
@@ -164,14 +183,16 @@ export async function POST(
   } else {
     const minimal = await updateOrder(admin, identity.userId, order.id, {
       alibaba_order_id: placed.alibabaOrderId,
-      alibaba_status_raw: {
+      alibaba_status_raw: mergeStatusRaw(order.alibabaStatusRaw, {
         payUrl: placed.payUrl ?? null,
         freightFee: placed.freightFee ?? null,
         carrierCode: placed.carrierCode ?? null,
+        tradeTerm: placed.tradeTerm ?? null,
+        deliveryTime: placed.deliveryTime ?? null,
         createRaw: placed.raw ?? null,
         placedAt,
         recordWarning: "status write failed",
-      },
+      }),
       placed_at: placedAt,
     });
     if (minimal) {

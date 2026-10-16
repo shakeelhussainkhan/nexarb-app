@@ -27,10 +27,13 @@ import {
   freightGuard,
   lastSyncFromRaw,
   mapAlibabaOrderStatus,
+  mergeStatusRaw,
+  noDdpFreightReason,
   ordersLiveFromEnv,
   parseCreateResponse,
   parsePayResult,
-  pickFreightSolution,
+  planPlacementFreight,
+  selectDdpFreightSolution,
   type AlibabaOrderStatus,
   type AlibabaSyncAttempt,
 } from "./ordersCore";
@@ -402,8 +405,9 @@ async function orderApiCall(
  * freight guard. */
 export interface DraftFreightQuote {
   freightFee: number;
-  /** vendor_code of the chosen (cheapest) solution — the carrier_code
-   * placement will request at create. */
+  /** vendor_code of the chosen solution (cheapest DDP, per the shared
+   * selection policy in ordersCore) — the carrier_code placement will
+   * request at create. */
   carrierCode: string;
   deliveryTime: string | null;
   tradeTerm: string | null;
@@ -439,22 +443,25 @@ export async function quoteDraftFreight(
     }),
   });
   if (!res.ok) return { ok: false, error: `could not quote freight: ${res.error}` };
-  const solution = pickFreightSolution(res.data);
-  if (!solution) {
+  // Same selection policy as placement (ordersCore.selectDdpFreightSolution):
+  // cheapest DDP. A response with no DDP solution is a quote FAILURE —
+  // the draft route 422s on it, exactly like any other unquotable
+  // freight, because placement would refuse the same response later.
+  const sel = selectDdpFreightSolution(res.data);
+  if (sel.kind === "none") {
     return { ok: false, error: "could not quote freight: freight calculate returned no usable shipping solution" };
   }
-  const rawRec =
-    solution.raw && typeof solution.raw === "object" && !Array.isArray(solution.raw)
-      ? (solution.raw as Record<string, unknown>)
-      : {};
-  const tradeTerm = rawRec.trade_term ?? rawRec.tradeTerm;
+  if (sel.kind === "no_ddp") {
+    return { ok: false, error: `could not quote freight: ${noDdpFreightReason(sel.offeredTerms)}` };
+  }
+  const solution = sel.solution;
   return {
     ok: true,
     quote: {
       freightFee: solution.freightFee,
       carrierCode: solution.carrierCode,
       deliveryTime: solution.deliveryTime,
-      tradeTerm: typeof tradeTerm === "string" && tradeTerm ? tradeTerm : null,
+      tradeTerm: solution.tradeTerm,
       quotedAt: new Date().toISOString(),
     },
   };
@@ -467,6 +474,18 @@ export interface PlaceResult {
   payUrl?: string;
   freightFee?: number;
   carrierCode?: string;
+  tradeTerm?: string | null;
+  deliveryTime?: string | null;
+  /** The freight solution placement committed to (chosen BEFORE the
+   * guard/create), so a failure record can name what was attempted —
+   * carrier, fee, term — alongside the error. Null when no solution
+   * was chosen (description/freight failure, or the no-DDP refusal). */
+  attempted?: {
+    carrierCode: string;
+    freightFee: number;
+    tradeTerm: string | null;
+    deliveryTime: string | null;
+  } | null;
   raw?: unknown;
   error?: string;
 }
@@ -499,10 +518,22 @@ export async function placeAlibabaOrder(
     ...buildFreightRequest({ eCompanyId, productId: order.alibabaProductId, skuId: order.skuId, qty: order.qty }),
   });
   if (!freight.ok) return { ok: false, error: `freight calculate failed: ${freight.error}`, raw: freight.data };
-  const solution = pickFreightSolution(freight.data);
-  if (!solution) {
-    return { ok: false, error: "freight calculate returned no usable shipping solution", raw: freight.data };
+  // DDP-only selection (ordersCore.planPlacementFreight): a freight
+  // response with no DDP solution refuses HERE, before any create call
+  // — a cheaper non-DDP solution produces Alibaba's [ISP/800022]
+  // "import charges is empty" at create (ornaments, 2026-10-15), and a
+  // non-DDP shipment would break wave-1 policy even if it succeeded.
+  const plan = planPlacementFreight(freight.data);
+  if (plan.action === "refuse") {
+    return { ok: false, error: plan.reason, raw: freight.data, attempted: null };
   }
+  const solution = plan.solution;
+  const attempted = {
+    carrierCode: solution.carrierCode,
+    freightFee: solution.freightFee,
+    tradeTerm: solution.tradeTerm,
+    deliveryTime: solution.deliveryTime,
+  };
 
   // Recompute the product total from qty × unit price — never trust a
   // stored total for a money decision.
@@ -514,7 +545,7 @@ export async function placeAlibabaOrder(
     perOrderCap,
   });
   if (!guard.allowed) {
-    return { ok: false, error: `freight guard refused placement: ${guard.reasons.join(" ")}`, raw: freight.data };
+    return { ok: false, error: `freight guard refused placement: ${guard.reasons.join(" ")}`, raw: freight.data, attempted };
   }
 
   const created = await orderApiCall(cfg, accessToken, ORDER_METHODS.create, {
@@ -526,10 +557,10 @@ export async function placeAlibabaOrder(
       qty: order.qty,
     }),
   });
-  if (!created.ok) return { ok: false, error: `order create failed: ${created.error}`, raw: created.data };
+  if (!created.ok) return { ok: false, error: `order create failed: ${created.error}`, raw: created.data, attempted };
   const parsed = parseCreateResponse(created.data);
   if (!parsed.tradeId) {
-    return { ok: false, error: "order create returned no trade_id — treating as not created", raw: created.data };
+    return { ok: false, error: "order create returned no trade_id — treating as not created", raw: created.data, attempted };
   }
   return {
     ok: true,
@@ -537,16 +568,11 @@ export async function placeAlibabaOrder(
     payUrl: parsed.payUrl ?? undefined,
     freightFee: solution.freightFee,
     carrierCode: solution.carrierCode,
+    tradeTerm: solution.tradeTerm,
+    deliveryTime: solution.deliveryTime,
+    attempted,
     raw: created.data,
   };
-}
-
-/** Merge a new payload into the stored raw blob without dropping the
- * placement facts (payUrl / freight / carrier) recorded at create time. */
-function mergeStatusRaw(prev: unknown, patch: Record<string, unknown>): Record<string, unknown> {
-  const base =
-    prev && typeof prev === "object" && !Array.isArray(prev) ? (prev as Record<string, unknown>) : {};
-  return { ...base, ...patch };
 }
 
 /** Persist a sync-attempt record (ordersCore.buildSyncAttempt) merged
