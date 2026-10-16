@@ -68,6 +68,10 @@ const isPublicRoute = createRouteMatcher([
 //                                 watch's write path as evidence arrives)
 //   /api/dashboard/metrics      — GET resolveUser (read-only executive
 //                                 metrics aggregations, PR-E1)
+//   /api/listings/foep          — GET resolveUser (read-only Featured
+//                                 Offer Expected Price hints for Amazon
+//                                 listings; advisory only — repricing
+//                                 itself stays session-only, NOT bypassed)
 // NOT included: /api/suppliers/promote (session-only founder decision,
 // enforced in the handler like /api/approvals POST),
 // /api/purchases/[id]/approve (approvals stay session-gated here AND in
@@ -104,6 +108,7 @@ const API_KEY_PATH_RES: RegExp[] = [
   /^\/api\/orders\/external$/,
   /^\/api\/orders\/external\/[^/]+\/milestones$/,
   /^\/api\/dashboard\/metrics$/,
+  /^\/api\/listings\/foep$/,
 ]
 
 export default clerkMiddleware(async (auth, request) => {
