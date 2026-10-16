@@ -81,6 +81,12 @@ export interface AlibabaOrderRecord {
    * alibaba_status_raw.lastSync (same no-separate-column pattern as
    * payUrl). Null until a sync has run against this order. */
   lastSync: AlibabaSyncAttempt | null;
+  /** Import-eligibility warning recorded when the intent was created
+   * under the benchmark brand-block waiver (ordersCore
+   * evaluateImportBenchmarkEligibility), derived from
+   * alibaba_status_raw.eligibilityWarning (same no-separate-column
+   * pattern). Null unless the waiver fired for this order. */
+  eligibilityWarning: string | null;
   placedAt: string | null;
   lastSyncedAt: string | null;
   createdAt: string;
@@ -90,6 +96,12 @@ export interface AlibabaOrderRecord {
 function payUrlFromRaw(raw: unknown): string | null {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
   const v = (raw as Record<string, unknown>).payUrl;
+  return typeof v === "string" && v ? v : null;
+}
+
+function eligibilityWarningFromRaw(raw: unknown): string | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const v = (raw as Record<string, unknown>).eligibilityWarning;
   return typeof v === "string" && v ? v : null;
 }
 
@@ -125,6 +137,7 @@ function rowToOrder(row: Record<string, unknown>): AlibabaOrderRecord {
     alibabaStatusRaw: row.alibaba_status_raw ?? null,
     payUrl: payUrlFromRaw(row.alibaba_status_raw),
     lastSync: lastSyncFromRaw(row.alibaba_status_raw),
+    eligibilityWarning: eligibilityWarningFromRaw(row.alibaba_status_raw),
     placedAt: row.placed_at ? String(row.placed_at) : null,
     lastSyncedAt: row.last_synced_at ? String(row.last_synced_at) : null,
     createdAt: String(row.created_at),

@@ -70,6 +70,16 @@ export interface IntentInput {
   // guardrail — does not apply. The dollar caps (per-order + daily) still
   // bind in full. Retail callers must leave this unset.
   exemptUnitsCap?: boolean;
+  // Alibaba IMPORT intents ONLY (founder decision, 2026-10-15): the
+  // benchmark ASIN's brand-level BLOCKED no longer refuses when
+  // lib/alibaba/ordersCore's evaluateImportBenchmarkEligibility has
+  // already decided the block is brand-level on an open category (the
+  // import lists as a NEW own-brand ASIN; the benchmark is only a
+  // pricing reference). The caller records the decision's warning with
+  // the intent. This waives ONLY the BLOCKED refusal below — UNKNOWN
+  // still refuses, and the verdict, caps, and kill switch are untouched.
+  // Retail callers must leave this unset.
+  waiveEligibilityBlock?: boolean;
 }
 
 export interface GuardDecision {
@@ -88,7 +98,7 @@ export function canCreateIntent(input: IntentInput): GuardDecision {
   if (input.verdict !== "BUY") {
     reasons.push(`Engine verdict is ${input.verdict} — a purchase intent requires BUY.`);
   }
-  if (input.eligibility === "BLOCKED") {
+  if (input.eligibility === "BLOCKED" && !input.waiveEligibilityBlock) {
     reasons.push("Amazon eligibility is BLOCKED — this ASIN cannot be listed, so it cannot be purchased.");
   }
   if (input.eligibility === "UNKNOWN") {

@@ -20,10 +20,11 @@ import {
   parsePayResult,
   buildSyncAttempt,
   lastSyncFromRaw,
+  evaluateImportBenchmarkEligibility,
   IMPORT_SHIP_TO,
 } from "@/lib/alibaba/ordersCore.ts";
 import { parseProductDescription, bestLandedCost } from "@/lib/alibaba/core.ts";
-import { screenProduct } from "@/lib/compliance/core.ts";
+import { screenProduct, detectCategory } from "@/lib/compliance/core.ts";
 import { canCreateIntent, capsFromEnv, DEFAULT_SPEND_CAPS } from "@/lib/engine/guards.ts";
 
 let pass = 0;
@@ -371,6 +372,118 @@ check(
     lastSyncFromRaw({}) === null &&
     lastSyncFromRaw("nope") === null &&
     lastSyncFromRaw({ lastSync: { at: 1, stage: "done", ok: true } }) === null
+);
+
+// --- import benchmark-eligibility semantics (founder decision 2026-10-15) -----
+// The intent route's gate 2: the benchmark ASIN is a pricing reference for
+// a product that lists as a NEW own-brand ASIN, so a brand-level BLOCK on
+// an open category warns instead of refusing. Gated categories and
+// compliance-blocked products still refuse.
+
+// (a) The bands scenario: benchmark B01AVDVHTI (Fit Simplify) BLOCKED,
+//     product in the open general category (Sports & Outdoors goods).
+const bandsCategory = detectCategory("Natural Latex Rubber Elastic Exercise Bands Set");
+check("import eligibility: bands title screens as the open 'general' category", bandsCategory === "general", bandsCategory);
+const bandsDecision = evaluateImportBenchmarkEligibility({
+  eligibilityState: "BLOCKED",
+  benchmarkAsin: "B01AVDVHTI",
+  screeningVerdict: "clear",
+  screeningReasons: [],
+  category: bandsCategory,
+});
+check("import eligibility: brand-blocked benchmark + open category -> warn", bandsDecision.outcome === "warn", bandsDecision.outcome);
+check("import eligibility: warning names the benchmark ASIN", (bandsDecision.warning ?? "").includes("B01AVDVHTI"));
+check(
+  "import eligibility: warning states the brand-level block and the own-brand listing",
+  (bandsDecision.warning ?? "").includes("brand level") && (bandsDecision.warning ?? "").includes("own brand")
+);
+// End-to-end gate shape, exactly as the route composes it (700 x $1.86
+// against capsFromEnv defaults: $1,500 per-order / $5,000 daily).
+const bandsGateBase = {
+  ...baseGate,
+  verdict: "BUY",
+  eligibility: "BLOCKED",
+  asin: "B01AVDVHTI",
+  qty: 700,
+  unitPrice: 1.86,
+  caps: capsFromEnv({}),
+  exemptUnitsCap: true,
+};
+check(
+  "import eligibility: gate ALLOWS the bands intent when the route passes the waiver",
+  canCreateIntent({ ...bandsGateBase, waiveEligibilityBlock: bandsDecision.outcome === "warn" }).allowed === true
+);
+check(
+  "import eligibility: the same input WITHOUT the waiver still refuses (retail semantics)",
+  (() => {
+    const d = canCreateIntent({ ...bandsGateBase, waiveEligibilityBlock: false });
+    return !d.allowed && d.reasons.some((r) => r.includes("BLOCKED"));
+  })()
+);
+
+// (b) BLOCKED benchmark + gated category -> still refused, category named.
+for (const gated of ["cosmetics", "food_or_supplement", "childrens_product", "electronics_rf"]) {
+  const d = evaluateImportBenchmarkEligibility({
+    eligibilityState: "BLOCKED",
+    benchmarkAsin: "B0GATED001",
+    screeningVerdict: "clear",
+    screeningReasons: [],
+    category: gated,
+  });
+  check(
+    `import eligibility: BLOCKED + ${gated} -> refuse naming the category`,
+    d.outcome === "refuse" && (d.refusalReason ?? "").includes(gated) && d.warning === null,
+    d.outcome
+  );
+}
+
+// (c) Compliance-BLOCKED product -> refused regardless of eligibility/category.
+const kratomScreen = screenProduct({ title: "Kratom powder 500g bulk", supplierName: "HerbCo" });
+const complianceVsSellable = evaluateImportBenchmarkEligibility({
+  eligibilityState: "SELLABLE",
+  benchmarkAsin: "B0KRATOM01",
+  screeningVerdict: kratomScreen.verdict,
+  screeningReasons: kratomScreen.reasons,
+  category: kratomScreen.category,
+});
+check(
+  "import eligibility: compliance-BLOCKED refuses even with a SELLABLE benchmark",
+  complianceVsSellable.outcome === "refuse" && (complianceVsSellable.refusalReason ?? "").includes("Compliance screening BLOCKED"),
+  complianceVsSellable.outcome
+);
+const complianceVsWaiver = evaluateImportBenchmarkEligibility({
+  eligibilityState: "BLOCKED",
+  benchmarkAsin: "B0KRATOM01",
+  screeningVerdict: "blocked",
+  screeningReasons: kratomScreen.reasons,
+  category: "general",
+});
+check(
+  "import eligibility: compliance-BLOCKED beats the brand-block waiver",
+  complianceVsWaiver.outcome === "refuse" && complianceVsWaiver.warning === null,
+  complianceVsWaiver.outcome
+);
+
+// (d) APPROVAL_REQUIRED / SELLABLE benchmarks: unchanged — decision passes.
+for (const state of ["APPROVAL_REQUIRED", "SELLABLE", "UNKNOWN"]) {
+  const d = evaluateImportBenchmarkEligibility({
+    eligibilityState: state,
+    benchmarkAsin: "B081NZ4YMH",
+    screeningVerdict: "clear",
+    screeningReasons: [],
+    category: "general",
+  });
+  check(`import eligibility: ${state} benchmark -> pass (guard decides, unchanged)`, d.outcome === "pass", d.outcome);
+}
+check(
+  "import eligibility: APPROVAL_REQUIRED passes even in a gated category (unchanged)",
+  evaluateImportBenchmarkEligibility({
+    eligibilityState: "APPROVAL_REQUIRED",
+    benchmarkAsin: "B0GATED001",
+    screeningVerdict: "clear",
+    screeningReasons: [],
+    category: "cosmetics",
+  }).outcome === "pass"
 );
 
 console.log(`\n${pass} passed, ${fail} failed`);

@@ -14,7 +14,8 @@
 //    lib/engine/guards.ts (capsFromEnv) exactly like POST /api/purchases.
 
 import type { LandedCost } from "./core";
-import type { ScreeningResult } from "@/lib/compliance/core";
+import type { ProductCategory, ScreeningResult } from "@/lib/compliance/core";
+import type { EligibilityState } from "../engine/eligibility.ts";
 import { floorPrice, outcomeAtPrice, referralPctForCategory } from "../engine/pricing.ts";
 
 // --- Lifecycle ---------------------------------------------------------------
@@ -83,6 +84,105 @@ export function draftBlockReason(screening: ScreeningResult): string | null {
     return `Compliance screening BLOCKED this product: ${screening.reasons[0] ?? "prohibited goods"}`;
   }
   return null;
+}
+
+// --- Import benchmark-eligibility semantics -----------------------------------
+//
+// An Alibaba import is listed as a NEW ASIN under Five S LLC's own brand.
+// The draft's target ASIN is a BENCHMARK — a pricing reference only — so
+// its SP-API eligibility answers the wrong question when it reads
+// BLOCKED at the BRAND level: the benchmark brand cannot be listed by
+// this account, but nothing about that stops an own-brand listing of an
+// equivalent product in an open category. Treating every benchmark
+// BLOCK as a refusal stranded exactly the products the import channel
+// exists for (live case, 2026-10-15: resistance-bands draft AO-MVA33LR9-1
+// refused because benchmark B01AVDVHTI, Fit Simplify, is brand-blocked,
+// while Sports & Outdoors is an open category).
+//
+// Founder decision (2026-10-15): for IMPORT intents only, a benchmark
+// BLOCK is decided by CATEGORY —
+//   - compliance screening BLOCKED the product itself -> refuse, always
+//     (prohibited/restricted goods; nothing below can waive this);
+//   - the product's category is one a new own-brand listing cannot enter
+//     without prior Amazon approval or a regulatory certification the
+//     import does not carry -> refuse, naming the category problem;
+//   - otherwise (open category) -> ALLOW with a recorded warning that
+//     names the benchmark and its brand block, so the founder approves
+//     the intent with the fact in front of them.
+// SELLABLE / APPROVAL_REQUIRED benchmarks are untouched (they pass the
+// guard exactly as before), and UNKNOWN still refuses in the guard —
+// a failed check is never waived. Retail intents never reach this
+// function: POST /api/purchases applies the BLOCKED refusal unchanged.
+
+/** Categories a NEW own-brand listing cannot enter on day one, with the
+ * gate stated. Keyed by the compliance category vocabulary (the only
+ * category signal a draft carries — its title-derived screening
+ * category). A category absent from this map is treated as open. */
+const IMPORT_GATED_CATEGORY_REASONS: Partial<Record<ProductCategory, string>> = {
+  childrens_product:
+    "children's products require a Children's Product Certificate from a CPSC-accepted lab and CPSC eFiling before a new listing can sell",
+  cosmetics:
+    "Beauty is an Amazon approval-required category, and cosmetics also carry FDA/MoCRA registration duties",
+  food_or_supplement:
+    "Grocery / Health & Household is an Amazon approval-required category, and food or supplements also carry FDA facility and FSVP duties",
+  electronics_rf:
+    "RF-emitting electronics require FCC authorization before they can be listed and sold",
+};
+
+export type ImportBenchmarkOutcome = "pass" | "warn" | "refuse";
+
+export interface ImportBenchmarkDecision {
+  outcome: ImportBenchmarkOutcome;
+  /** Set iff outcome === "warn": travels with the intent (route response,
+   * the order's alibaba_status_raw, and the intent's audit note). */
+  warning: string | null;
+  /** Set iff outcome === "refuse". */
+  refusalReason: string | null;
+}
+
+export function evaluateImportBenchmarkEligibility(input: {
+  eligibilityState: EligibilityState;
+  benchmarkAsin: string;
+  screeningVerdict: string;
+  screeningReasons?: string[];
+  category: ProductCategory;
+}): ImportBenchmarkDecision {
+  // The product ITSELF is prohibited/restricted goods — absolute, and
+  // checked first so no eligibility outcome can soften it. A draft with
+  // this verdict should not exist (draft creation refuses it); this is
+  // the intent layer's defence in depth.
+  if (input.screeningVerdict === "blocked") {
+    return {
+      outcome: "refuse",
+      warning: null,
+      refusalReason: `Compliance screening BLOCKED this product: ${
+        input.screeningReasons?.[0] ?? "prohibited goods"
+      }`,
+    };
+  }
+  if (input.eligibilityState !== "BLOCKED") {
+    return { outcome: "pass", warning: null, refusalReason: null };
+  }
+  const gatedReason = IMPORT_GATED_CATEGORY_REASONS[input.category];
+  if (gatedReason) {
+    return {
+      outcome: "refuse",
+      warning: null,
+      refusalReason:
+        `Amazon eligibility is BLOCKED for benchmark ASIN ${input.benchmarkAsin}, and the product's ` +
+        `category (${input.category}) cannot be listed as a new own-brand listing: ${gatedReason}. ` +
+        `The import intent is refused on category grounds — a benchmark brand-block waiver does not apply here.`,
+    };
+  }
+  return {
+    outcome: "warn",
+    warning:
+      `Benchmark ASIN ${input.benchmarkAsin} is BLOCKED on Amazon at the brand level — the benchmark ` +
+      `brand cannot be listed by this account. This import will be listed as a NEW ASIN under Five S ` +
+      `LLC's own brand, so the benchmark's brand block does not apply to our listing; the benchmark ` +
+      `served as a pricing reference only. Confirm the own-brand listing's eligibility when it is created.`,
+    refusalReason: null,
+  };
 }
 
 // --- Money -----------------------------------------------------------------------
