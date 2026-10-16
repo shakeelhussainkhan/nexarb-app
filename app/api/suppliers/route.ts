@@ -50,6 +50,7 @@ interface OfferRow {
   eval_reasons: unknown;
   evaluated_at: string | null;
   promoted_watchlist_asin: string | null;
+  listing_title: string | null;
   first_seen_at: string;
   last_seen_at: string;
 }
@@ -99,7 +100,7 @@ export async function GET(req: Request): Promise<NextResponse> {
     let query = admin
       .from("supplier_offers")
       .select(
-        "id, supplier, supplier_sku, vendor_sku, title, brand, upc, cost_price, map_price, msrp, qty_available, image_url, product_class, subcategory, weight_lb, origin_country, matched_asin, match_status, amazon_price, est_net, est_margin_pct, priced_at, eval_verdict, eval_score, eval_reasons, evaluated_at, promoted_watchlist_asin, first_seen_at, last_seen_at"
+        "id, supplier, supplier_sku, vendor_sku, title, brand, upc, cost_price, map_price, msrp, qty_available, image_url, product_class, subcategory, weight_lb, origin_country, matched_asin, match_status, amazon_price, est_net, est_margin_pct, priced_at, eval_verdict, eval_score, eval_reasons, evaluated_at, promoted_watchlist_asin, listing_title, first_seen_at, last_seen_at"
       )
       .eq("supplier", supplier)
       .limit(limit);
@@ -157,6 +158,7 @@ export async function GET(req: Request): Promise<NextResponse> {
         : [],
       evaluatedAt: r.evaluated_at,
       promotedAsin: r.promoted_watchlist_asin,
+      listingTitle: r.listing_title,
       firstSeenAt: r.first_seen_at,
       lastSeenAt: r.last_seen_at,
     }));
