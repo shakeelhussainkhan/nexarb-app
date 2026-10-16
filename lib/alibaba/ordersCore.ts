@@ -454,15 +454,21 @@ export interface FreightSolution {
   currency: string | null;
   deliveryTime: string | null;
   vendorName: string | null;
+  /** trade_term as returned by the API ("DDP", "DAP", …); null when the
+   * solution carries none. Placement policy keys on this (see
+   * selectDdpFreightSolution). */
+  tradeTerm: string | null;
   raw: unknown;
 }
 
-/** Cheapest usable solution from a freight response; null when the
- * response carries no solution with a vendor_code and a numeric fee. */
-export function pickFreightSolution(rawResponse: unknown): FreightSolution | null {
+/** Every usable solution in a freight response (vendor_code + numeric
+ * fee), in response order. The shared parse beneath both selection
+ * policies below — draft quotes and placement MUST select from the
+ * same list or their totals stop being comparable. */
+export function listFreightSolutions(rawResponse: unknown): FreightSolution[] {
   const list = findArray(rawResponse);
-  if (!list) return null;
-  let best: FreightSolution | null = null;
+  if (!list) return [];
+  const out: FreightSolution[] = [];
   for (const entry of list) {
     const rec = asRec(entry);
     if (!rec) continue;
@@ -470,17 +476,105 @@ export function pickFreightSolution(rawResponse: unknown): FreightSolution | nul
     const fee = asRec(rec.fee);
     const amount = asNum(fee?.amount ?? rec.fee_amount ?? rec.amount);
     if (!carrierCode || amount === null || amount < 0) continue;
-    const solution: FreightSolution = {
+    out.push({
       carrierCode,
       freightFee: Math.round(amount * 100) / 100,
       currency: (fee ? asStr(fee.currency) : "") || asStr(rec.currency) || null,
       deliveryTime: asStr(rec.delivery_time ?? rec.deliveryTime) || null,
       vendorName: asStr(rec.vendor_name ?? rec.vendorName) || null,
+      tradeTerm: asStr(rec.trade_term ?? rec.tradeTerm) || null,
       raw: entry,
-    };
+    });
+  }
+  return out;
+}
+
+/** Cheapest usable solution from a freight response; null when the
+ * response carries no solution with a vendor_code and a numeric fee.
+ * NOTE: retained for compatibility — the draft quote and placement do
+ * NOT select with this anymore; they use selectDdpFreightSolution so a
+ * cheap non-DDP solution can never win a create (see below). */
+export function pickFreightSolution(rawResponse: unknown): FreightSolution | null {
+  let best: FreightSolution | null = null;
+  for (const solution of listFreightSolutions(rawResponse)) {
     if (!best || solution.freightFee < best.freightFee) best = solution;
   }
   return best;
+}
+
+export type DdpFreightSelection =
+  | { kind: "selected"; solution: FreightSolution }
+  | { kind: "no_ddp"; offeredTerms: string[] }
+  | { kind: "none"; offeredTerms: string[] };
+
+function isDdpTerm(term: string | null): boolean {
+  return (term ?? "").trim().toUpperCase() === "DDP";
+}
+
+/**
+ * THE freight selection policy for drafts and placement (wave-1,
+ * 2026-10-15): among DDP solutions pick the cheapest fee; when no DDP
+ * solution is offered, say so distinctly instead of falling back to a
+ * cheaper non-DDP solution. Rationale (live incident, ornaments
+ * AO-MVA7QIPN-1): cheapest-regardless selection picked a solution
+ * without DDP import charges and /buynow/order/create refused with
+ * [ISP/800022] "The import charges is empty" — twice. The successful
+ * cubes order's cheapest happened to be the DDP ocean solution. DDP is
+ * also the wave-1 policy (duties handled by Alibaba Logistics), so a
+ * non-DDP create would be wrong even if Alibaba accepted it.
+ */
+export function selectDdpFreightSolution(rawResponse: unknown): DdpFreightSelection {
+  const solutions = listFreightSolutions(rawResponse);
+  const offeredTerms: string[] = [];
+  for (const s of solutions) {
+    if (s.tradeTerm && !offeredTerms.includes(s.tradeTerm)) offeredTerms.push(s.tradeTerm);
+  }
+  if (solutions.length === 0) return { kind: "none", offeredTerms };
+  let best: FreightSolution | null = null;
+  for (const s of solutions) {
+    if (!isDdpTerm(s.tradeTerm)) continue;
+    if (!best || s.freightFee < best.freightFee) best = s;
+  }
+  if (!best) return { kind: "no_ddp", offeredTerms };
+  return { kind: "selected", solution: best };
+}
+
+/** The refusal wording for a freight response with no DDP solution —
+ * names the terms that WERE offered so the record says what Alibaba
+ * actually put on the table. */
+export function noDdpFreightReason(offeredTerms: string[]): string {
+  const terms = offeredTerms.length > 0 ? offeredTerms.join(", ") : "none stated";
+  return `No DDP freight solution offered for this order (offered terms: ${terms}) — placement requires DDP per wave-1 policy.`;
+}
+
+export type PlacementFreightPlan =
+  | { action: "create"; solution: FreightSolution }
+  | { action: "refuse"; reason: string };
+
+/**
+ * The placement path's freight decision, factored pure so the harness
+ * can pin it: placeAlibabaOrder creates NOTHING unless this plan says
+ * "create" — a no-DDP (or unusable) freight response refuses BEFORE
+ * any /buynow/order/create call, with the reason the failure record
+ * will carry.
+ */
+export function planPlacementFreight(rawResponse: unknown): PlacementFreightPlan {
+  const sel = selectDdpFreightSolution(rawResponse);
+  if (sel.kind === "selected") return { action: "create", solution: sel.solution };
+  if (sel.kind === "no_ddp") return { action: "refuse", reason: noDdpFreightReason(sel.offeredTerms) };
+  return { action: "refuse", reason: "freight calculate returned no usable shipping solution" };
+}
+
+/**
+ * Merge a patch into a stored alibaba_status_raw blob WITHOUT dropping
+ * prior keys. Placement-failure writes once REPLACED the blob with
+ * {error} and destroyed the draft-time freightQuote (PR #70) that
+ * diagnosis needed — every status-raw write merges through here.
+ */
+export function mergeStatusRaw(prev: unknown, patch: Record<string, unknown>): Record<string, unknown> {
+  const base =
+    prev && typeof prev === "object" && !Array.isArray(prev) ? (prev as Record<string, unknown>) : {};
+  return { ...base, ...patch };
 }
 
 export interface FreightGuardResult {
