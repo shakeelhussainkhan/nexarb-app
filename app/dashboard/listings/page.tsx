@@ -22,6 +22,14 @@ type Listing = {
   priceMax: number | null;
 };
 
+// Amazon's Featured Offer Expected Price hint (GET /api/listings/foep).
+// Advisory only — it never changes a price by itself.
+type FoepHint = {
+  state: "valid" | "no-competition" | "unavailable";
+  expectedPrice: number | null;
+  note: string;
+};
+
 const BUYBOX_STYLE: Record<string, { bg: string; text: string; label: string }> = {
   winning: { bg: "#D1FAE5", text: "#065F46", label: "Winning" },
   losing: { bg: "#FEE2E2", text: "#991B1B", label: "Losing" },
@@ -41,6 +49,9 @@ export default function ListingsPage() {
   const [syncSummary, setSyncSummary] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
   const [confirming, setConfirming] = useState<string | null>(null);
+  const [foepById, setFoepById] = useState<Record<string, FoepHint>>({});
+  const [foepReason, setFoepReason] = useState<string | null>(null);
+  const [foepLoading, setFoepLoading] = useState(true);
 
   const fetchListings = useCallback(async () => {
     try {
@@ -56,9 +67,32 @@ export default function ListingsPage() {
     }
   }, []);
 
+  const fetchFoep = useCallback(async () => {
+    try {
+      const res = await fetch("/api/listings/foep");
+      if (!res.ok) throw new Error("failed");
+      const data = (await res.json()) as {
+        foep: Array<{ listingId: string; state: FoepHint["state"]; expectedPrice: number | null; note: string }>;
+        reason: string | null;
+      };
+      const map: Record<string, FoepHint> = {};
+      for (const e of Array.isArray(data.foep) ? data.foep : []) {
+        map[e.listingId] = { state: e.state, expectedPrice: e.expectedPrice, note: e.note };
+      }
+      setFoepById(map);
+      setFoepReason(data.reason ?? null);
+    } catch {
+      // Hints are advisory: a failed fetch just leaves the column blank.
+      setFoepById({});
+    } finally {
+      setFoepLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     fetchListings();
-  }, [fetchListings]);
+    fetchFoep();
+  }, [fetchListings, fetchFoep]);
 
   async function sync() {
     setSyncBusy(true);
@@ -78,6 +112,7 @@ export default function ListingsPage() {
         setSyncSummary((prev) => `${prev} ${data.errors!.length} note(s): ${data.errors![0]}`);
       }
       fetchListings();
+      fetchFoep();
     } catch (e) {
       setNotice(`Sync failed — ${e instanceof Error ? e.message : "server didn't confirm"}.`);
     } finally {
@@ -163,6 +198,7 @@ export default function ListingsPage() {
                   <th className="px-5 py-3">Our price</th>
                   <th className="px-5 py-3">Buy Box</th>
                   <th className="px-5 py-3">Box</th>
+                  <th className="px-5 py-3">Win at ≤</th>
                   <th className="px-5 py-3">Offers</th>
                   <th className="px-5 py-3">Margin</th>
                   <th className="px-5 py-3">Suggested</th>
@@ -200,6 +236,50 @@ export default function ListingsPage() {
                         <span className="px-2.5 py-1 rounded-full text-xs font-semibold" style={{ background: bb.bg, color: bb.text }}>
                           {bb.label}
                         </span>
+                      </td>
+                      <td className="px-5 py-3">
+                        {(() => {
+                          const f = foepById[l.id];
+                          if (l.channel === "walmart") {
+                            return <span className="text-gray-400">—</span>;
+                          }
+                          if (!f) {
+                            return <span className="text-gray-300">{foepLoading ? "…" : "—"}</span>;
+                          }
+                          if (f.state === "valid") {
+                            const gap =
+                              f.expectedPrice != null && l.ourPrice != null
+                                ? Math.round((l.ourPrice - f.expectedPrice) * 100) / 100
+                                : null;
+                            return (
+                              <span title={f.note}>
+                                <span className="font-semibold" style={{ color: "#0D1B2A" }}>
+                                  ≤ {fmt(f.expectedPrice)}
+                                </span>
+                                {gap != null && (
+                                  <span
+                                    className="block text-[11px]"
+                                    style={{ color: gap > 0 ? "#991B1B" : "#065F46" }}
+                                  >
+                                    {gap > 0 ? `lower by ${fmt(gap)}` : "in range"}
+                                  </span>
+                                )}
+                              </span>
+                            );
+                          }
+                          if (f.state === "no-competition") {
+                            return (
+                              <span className="text-gray-400" title={f.note}>
+                                No rivals
+                              </span>
+                            );
+                          }
+                          return (
+                            <span className="text-gray-400" title={f.note}>
+                              —
+                            </span>
+                          );
+                        })()}
                       </td>
                       <td className="px-5 py-3">{l.offerCount ?? "—"}</td>
                       <td className="px-5 py-3">
@@ -273,6 +353,9 @@ export default function ListingsPage() {
         <p className="text-xs text-gray-400 mt-4">
           Margin uses the fee-stack estimate and your latest recorded buy cost. Price changes write to the live
           marketplace and are logged. Bounds shown come from your watchlist — prices outside them are refused.
+          “Win at ≤” is Amazon&apos;s Featured Offer Expected Price — an advisory estimate of the price that
+          can expect to win the Buy Box; it never changes a price on its own.
+          {foepReason && <span className="block mt-1">Featured Offer prices unavailable right now: {foepReason}</span>}
         </p>
       )}
     </div>
