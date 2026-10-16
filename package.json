@@ -10,6 +10,7 @@
     "verify:compliance": "node --experimental-strip-types --loader ./scripts/alias-loader.mjs scripts/verify-compliance.mjs"
   },
   "dependencies": {
+    "@clerk/backend": "^3.16.0",
     "@clerk/nextjs": "^7.7.0",
     "@stripe/stripe-js": "^9.13.0",
     "@supabase/supabase-js": "^2.112.2",

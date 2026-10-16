@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { auth } from "@clerk/nextjs/server";
+import { resolveUser } from "@/lib/auth/resolveUser";
 import { getSupabaseAdmin } from "@/lib/supabase";
 import { supabaseIsConfigured } from "@/lib/engine/guards";
 import { velocityReport, type VelocityReport } from "@/lib/engine/velocity";
@@ -17,9 +17,16 @@ export type { Deal, DealEngine, DealChannel } from "@/lib/engine/dealCore";
 // GET /api/deals — first-party deal list.
 // Returns the latest deal_checks row per ASIN (newest first), mapped to the
 // dashboard's Deal shape. No relay involved.
-export async function GET(): Promise<NextResponse> {
-  const { userId } = await auth();
-  if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+//
+// Session-only, as ever — but the session may arrive either as the browser
+// cookie or as a Clerk Bearer token (the mobile app holds no cookies),
+// both resolved by resolveUser. API keys stay locked out on purpose:
+// resolveUser would accept them, so that path is rejected explicitly here.
+export async function GET(req: Request): Promise<NextResponse> {
+  const identity = await resolveUser(req);
+  if (identity.kind !== "identity" || identity.via === "api-key") {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
 
   if (!supabaseIsConfigured(process.env)) {
     return NextResponse.json({ deals: [], note: "Supabase not configured." });
