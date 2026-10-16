@@ -6,6 +6,14 @@
 // SP-API throttle, then run the pure core (lib/suppliers/evaluateCore.ts)
 // and persist verdict / score / reasons / evaluated_at on the offer row.
 //
+// The Catalog call also returns the listing title (summaries ride along
+// on the same request): it feeds pack normalization in the core
+// (lib/suppliers/packNormalizeCore.ts) — the stored Amazon price is
+// divided by the listing's declared pack quantity before any economics
+// run — and is persisted on the row (listing_title, migration 025) as
+// the audit trail for that division. The live title wins; the stored
+// one is the fallback when the live fetch fails.
+//
 // Bounded and idempotent like the match/pricing passes: fresh evaluations
 // are skipped; stale ones (>24h) refresh only when the caller passes
 // refresh=true. Nothing here orders, promotes, or spends money — promotion
@@ -47,6 +55,8 @@ interface EvalOfferRow {
   qty_available: number;
   matched_asin: string | null;
   amazon_price: number | string | null;
+  upc: string | null;
+  listing_title: string | null;
 }
 
 function mapEligibility(state: EligibilityState): EvalEligibility {
@@ -87,7 +97,7 @@ export async function evaluateSupplierOffers(opts: {
   let query = admin
     .from("supplier_offers")
     .select(
-      "id, supplier, supplier_sku, title, brand, product_class, subcategory, cost_price, qty_available, matched_asin, amazon_price, evaluated_at"
+      "id, supplier, supplier_sku, title, brand, product_class, subcategory, cost_price, qty_available, matched_asin, amazon_price, upc, listing_title, evaluated_at"
     )
     .eq("match_status", "matched")
     .not("matched_asin", "is", null)
@@ -119,12 +129,17 @@ export async function evaluateSupplierOffers(opts: {
     result.processed++;
     const asin = row.matched_asin ?? "";
     try {
-      const { rank, category } = await fetchSalesRankSnapshot(cfg, asin, spFetch);
+      const { rank, category, title: liveTitle } = await fetchSalesRankSnapshot(cfg, asin, spFetch);
       // First-party velocity data: record this rank exactly like the deal
       // check does, so evaluation also grows the snapshot series the
       // velocity model reads. Best-effort inside the helper.
       await recordVelocitySnapshot(admin, asin, rank, category);
       const eligibility = await checkEligibility(cfg, asin, eligibilityCache, spFetch);
+
+      // Pack normalization inputs: the live Catalog title is the
+      // authority on what the stored price buys; the persisted title
+      // is the fallback when the live fetch came back empty.
+      const listingTitle = liveTitle ?? row.listing_title ?? null;
 
       const evaluation = evaluateOffer(
         {
@@ -143,6 +158,8 @@ export async function evaluateSupplierOffers(opts: {
           // Frontier's files carry no stock counts — qty_available there is
           // a schema default (0), NOT a real zero. Unknown stays unknown.
           stockAtSupplier: row.supplier === FRONTIER_SUPPLIER ? null : row.qty_available,
+          listingTitle,
+          supplierUpc: row.upc,
         }
       );
 
@@ -153,6 +170,9 @@ export async function evaluateSupplierOffers(opts: {
           eval_score: evaluation.score,
           eval_reasons: evaluation.reasons,
           evaluated_at: new Date().toISOString(),
+          // Persist the title the pack decision keyed off, so the
+          // normalization stays auditable after the fact (migration 025).
+          listing_title: listingTitle,
         })
         .eq("id", row.id);
       if (upErr) {

@@ -17,6 +17,20 @@
 //
 // and emits a verdict + 0–100 score + human-readable reasons.
 //
+// PACK NORMALIZATION (lib/suppliers/packNormalizeCore.ts): the stored
+// Amazon price is the price of whatever the matched listing sells —
+// which is often a CASE PACK, while the supplier cost is per single
+// unit. Before any economics run, the listing's own pack declaration
+// (and the supplier UPC's shape) establish the per-unit price basis:
+// economics, margin and score are computed on amazonPrice ÷ packQty,
+// and the normalization is stated in the reasons. A case-level
+// GTIN-14 supplier UPC makes the feed's unit definition untrustworthy
+// (case identifiers wrapped around a per-unit price) — such offers
+// return "pass" with the reason recorded and never surface as
+// candidates. When the caller supplies no listing title at all, no
+// pack check is possible and the price is treated as a single unit
+// exactly as before (the verify-evaluate.mjs contract is unchanged).
+//
 // VERDICT RULES (the whole contract — keep in sync with the harness):
 //   candidate — freight-aware net >= $5/unit AND freight-aware margin
 //               >= 20% AND velocity is not "weak" AND the supplier has
@@ -46,6 +60,10 @@
 
 import { estimateSupplierNet } from "./petraCore";
 import { estimateVelocity } from "@/lib/engine/velocity";
+import {
+  analyzeListingPack,
+  type PackNormalizationStatus,
+} from "./packNormalizeCore";
 
 // ---------------------------------------------------------------------------
 // Inputs / outputs
@@ -80,6 +98,16 @@ export interface EvalSignals {
   eligibility: EvalEligibility;
   /** Supplier on-hand qty; null = the feed carries no counts (Frontier). */
   stockAtSupplier: number | null;
+  /** Amazon listing title for the matched ASIN (live Catalog title,
+   * or the title persisted on the offer row). When present (even
+   * null), pack normalization runs and its outcome is recorded in the
+   * reasons; when the field is absent entirely, no pack check is
+   * possible and the price is treated as a single unit, as before. */
+  listingTitle?: string | null;
+  /** The supplier feed's UPC for this offer — its shape (each vs
+   * case-level GTIN-14) gates whether per-unit economics are
+   * trustworthy at all. See lib/suppliers/packNormalizeCore.ts. */
+  supplierUpc?: string | null;
 }
 
 export interface EvalOptions {
@@ -112,6 +140,15 @@ export interface OfferEvaluation {
   estMonthlySales: number | null;
   /** Seasonal groups matched (subset of SEASONAL_TERMS labels). */
   seasonalGroups: string[];
+  /** Pack quantity the listing price was divided by (1 = single unit
+   * or no pack check possible). */
+  packQty: number;
+  /** "unverified_case_upc" when the supplier UPC is a case-level
+   * GTIN-14 and per-unit economics were refused outright. */
+  packStatus: PackNormalizationStatus;
+  /** Per-unit Amazon price the economics ran on (amazonPrice ÷
+   * packQty); null when refused or when the price was unusable. */
+  unitAmazonPrice: number | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -230,13 +267,30 @@ export function evaluateOffer(
   const velocity = classifyVelocity(signals.bsr, signals.category);
   const seasonalGroups = seasonalGroupsFor(offer);
 
+  // Pack normalization — establish the per-unit price basis BEFORE any
+  // economics (see the header note). Runs only when the caller supplied
+  // pack inputs (either field present); when neither is supplied the
+  // price is treated as a single unit exactly as before.
+  const pack =
+    signals.listingTitle !== undefined || signals.supplierUpc !== undefined
+      ? analyzeListingPack({
+          listingTitle: signals.listingTitle,
+          upc: signals.supplierUpc,
+          amazonPrice: signals.amazonPrice,
+        })
+      : null;
+  const effectivePrice =
+    pack && pack.status === "ok" && pack.unitAmazonPrice !== null
+      ? pack.unitAmazonPrice
+      : signals.amazonPrice;
+
   const base = estimateSupplierNet(
     {
       costPrice: offer.costPrice,
       productClass: offer.productClass,
       subcategory: offer.subcategory,
     },
-    signals.amazonPrice
+    effectivePrice
   );
 
   // Freight assumption — ALWAYS stated in the reasons (first entry), so a
@@ -250,6 +304,48 @@ export function evaluateOffer(
     reasons.push(
       `freight: est. $${freightPerUnit.toFixed(2)}/unit at ${Math.round(freightRate * 100)}% of supplier cost (order below the $800 free-freight threshold)`
     );
+  }
+
+  // Case-level GTIN-14 supplier UPC: the feed's unit definition is
+  // unverified (case identifiers wrapped around a per-unit price), so
+  // no per-unit economics are candidate-grade. Hard pass, reason
+  // recorded — the offer must not surface as a candidate.
+  if (pack && pack.status === "unverified_case_upc") {
+    reasons.push(
+      `pack_check: unverified case UPC — supplier UPC ${signals.supplierUpc ?? ""} is a case-level GTIN-14, so the feed's unit definition cannot be trusted and per-unit economics are not candidate-grade; excluded from candidates until the supplier unit is confirmed`
+    );
+    return {
+      verdict: "pass",
+      score: 0,
+      reasons,
+      freightNet: 0,
+      freightMarginPct: 0,
+      freightPerUnit: 0,
+      baseNet: 0,
+      baseMarginPct: 0,
+      velocityClass: velocity.cls,
+      estMonthlySales: velocity.monthlySales,
+      seasonalGroups,
+      packQty: pack.packQty,
+      packStatus: pack.status,
+      unitAmazonPrice: null,
+    };
+  }
+
+  // Pack outcome reasons — every normalization (and every unverifiable
+  // single-unit assumption) is on the record.
+  if (pack) {
+    if (pack.packQty > 1) {
+      reasons.push(
+        `pack_normalized: listing pack of ${pack.packQty} → unit price $${effectivePrice.toFixed(2)} (Amazon price $${signals.amazonPrice.toFixed(2)} ÷ ${pack.packQty}; ${pack.pack.evidence})`
+      );
+    } else if (pack.pack.confidence === "none") {
+      reasons.push(
+        signals.listingTitle
+          ? "pack_check: no explicit pack declaration in the Amazon listing title — price treated as a single unit (low-confidence)"
+          : "pack_check: Amazon listing title unavailable — pack size unverified, price treated as a single unit (low-confidence)"
+      );
+    }
   }
 
   if (!base) {
@@ -266,11 +362,14 @@ export function evaluateOffer(
       velocityClass: velocity.cls,
       estMonthlySales: velocity.monthlySales,
       seasonalGroups,
+      packQty: pack?.packQty ?? 1,
+      packStatus: pack?.status ?? "ok",
+      unitAmazonPrice: pack ? pack.unitAmazonPrice : signals.amazonPrice,
     };
   }
 
   const freightNet = round2(base.net - freightPerUnit);
-  const freightMarginPct = round1((freightNet / signals.amazonPrice) * 100);
+  const freightMarginPct = round1((freightNet / effectivePrice) * 100);
   const profitable = freightNet > 0 && freightMarginPct > 0;
 
   // Velocity reason.
@@ -366,5 +465,8 @@ export function evaluateOffer(
     velocityClass: velocity.cls,
     estMonthlySales: velocity.monthlySales,
     seasonalGroups,
+    packQty: pack?.packQty ?? 1,
+    packStatus: pack?.status ?? "ok",
+    unitAmazonPrice: pack ? pack.unitAmazonPrice : signals.amazonPrice,
   };
 }
