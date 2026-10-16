@@ -66,6 +66,8 @@ const isPublicRoute = createRouteMatcher([
 //   /api/orders/external/[id]/milestones — POST resolveUser (append one
 //                                 journey milestone; the Petra email
 //                                 watch's write path as evidence arrives)
+//   /api/dashboard/metrics      — GET resolveUser (read-only executive
+//                                 metrics aggregations, PR-E1)
 // NOT included: /api/suppliers/promote (session-only founder decision,
 // enforced in the handler like /api/approvals POST),
 // /api/purchases/[id]/approve (approvals stay session-gated here AND in
@@ -101,6 +103,7 @@ const API_KEY_PATH_RES: RegExp[] = [
   /^\/api\/orders\/journeys$/,
   /^\/api\/orders\/external$/,
   /^\/api\/orders\/external\/[^/]+\/milestones$/,
+  /^\/api\/dashboard\/metrics$/,
 ]
 
 export default clerkMiddleware(async (auth, request) => {
