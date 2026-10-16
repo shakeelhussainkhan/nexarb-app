@@ -240,16 +240,22 @@ type FetchFn = typeof fetch;
 
 /**
  * Read the current Amazon sales rank (BSR) + category for an ASIN via the
- * SP-API Catalog Items 2022-04-01 API with includedData=salesRanks. Same LWA
- * auth pattern as lib/spapi/pricing.ts. Never throws — returns nulls on any
- * failure so callers treat "unknown" honestly.
+ * SP-API Catalog Items 2022-04-01 API with includedData=salesRanks. The
+ * response's summaries ride along on the same call, so the listing title
+ * is returned too (supplier evaluation's pack normalization keys off
+ * it). Same LWA auth pattern as lib/spapi/pricing.ts. Never throws —
+ * returns nulls on any failure so callers treat "unknown" honestly.
  */
 export async function fetchSalesRankSnapshot(
   cfg: SpApiConfig,
   asin: string,
   fetchFn: FetchFn = fetch
-): Promise<{ rank: number | null; category: string | null }> {
-  const empty = { rank: null as number | null, category: null as string | null };
+): Promise<{ rank: number | null; category: string | null; title: string | null }> {
+  const empty = {
+    rank: null as number | null,
+    category: null as string | null,
+    title: null as string | null,
+  };
   try {
     const res = await fetchFn("https://api.amazon.com/auth/o2/token", {
       method: "POST",
@@ -269,7 +275,11 @@ export async function fetchSalesRankSnapshot(
     const url =
       `${endpoint}/catalog/2022-04-01/items/${encodeURIComponent(asin)}` +
       `?marketplaceIds=${encodeURIComponent(cfg.marketplaceId)}` +
-      `&includedData=salesRanks`;
+      // summaries rides along on the same call (no extra request): the
+      // listing title is the pack-normalization authority for supplier
+      // evaluation (lib/suppliers/packNormalizeCore.ts). Callers that
+      // only need rank/category are unaffected.
+      `&includedData=salesRanks,summaries`;
     const itemRes = await fetchFn(url, {
       headers: {
         "x-amz-access-token": tokenData.access_token,
@@ -283,13 +293,16 @@ export async function fetchSalesRankSnapshot(
         classificationRanks?: Array<{ rank?: number; title?: string }>;
         displayGroupRanks?: Array<{ rank?: number; title?: string }>;
       }>;
+      summaries?: Array<{ itemName?: string }>;
     };
     const entry =
       data.salesRanks?.[0]?.classificationRanks?.[0] ??
       data.salesRanks?.[0]?.displayGroupRanks?.[0];
     const rank = typeof entry?.rank === "number" && entry.rank > 0 ? entry.rank : null;
     const category = typeof entry?.title === "string" && entry.title.length > 0 ? entry.title : null;
-    return { rank, category };
+    const itemName = data.summaries?.[0]?.itemName;
+    const title = typeof itemName === "string" && itemName.trim().length > 0 ? itemName.trim() : null;
+    return { rank, category, title };
   } catch {
     return empty;
   }
