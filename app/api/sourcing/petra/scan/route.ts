@@ -12,7 +12,9 @@ import { priceMatchedPetraOffers } from "@/lib/suppliers/petra";
 // lib/engine/pricing.ts + $1.50/unit 3PL prep — estimates, never exact).
 // Offers whose price lookup is unknown stay unpriced for a later pass.
 //
-// Body (optional): { cap } — default 100, hard-capped in the lib.
+// Body (optional): { cap } — default 25, hard-capped at 50 in the lib
+// (each attempt costs two throttled SP-API calls; larger batches timed
+// out before returning — see lib/suppliers/pricingCore.ts).
 // Auth: Clerk session OR personal API key (X-NexArb-Key).
 // PRICING ONLY — reads prices and stores estimates; buys nothing.
 export async function POST(req: Request): Promise<NextResponse> {
@@ -27,7 +29,7 @@ export async function POST(req: Request): Promise<NextResponse> {
       );
     }
 
-    let cap = 100;
+    let cap = 25;
     try {
       const body = (await req.json()) as { cap?: unknown };
       if (typeof body?.cap === "number" && Number.isFinite(body.cap)) {

@@ -7,6 +7,7 @@
 // purchase intents, or spends money.
 
 import type { SupplierOffer } from "./petraCore";
+import { PRICE_SCAN_DEFAULT_CAP } from "./pricingCore";
 import {
   ingestSupplierOffers,
   matchPendingSupplierOffers,
@@ -29,6 +30,8 @@ export function matchPendingPetraOffers(limit = 50): Promise<MatchOffersResult> 
   return matchPendingSupplierOffers("petra", limit);
 }
 
-export function priceMatchedPetraOffers(cap = 100): Promise<PriceOffersResult> {
+export function priceMatchedPetraOffers(
+  cap = PRICE_SCAN_DEFAULT_CAP
+): Promise<PriceOffersResult> {
   return priceMatchedSupplierOffers("petra", cap);
 }
