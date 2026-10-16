@@ -1,17 +1,17 @@
 export const dynamic = "force-dynamic";
 
 import { Suspense } from "react";
-import DashboardClient from "@/components/DashboardClient";
+import ExecutiveDashboard from "@/components/ExecutiveDashboard";
 
 export const metadata = {
   title: "Dashboard — NexArb",
-  description: "Your arbitrage deal pipeline and analytics",
+  description: "Business overview — money, order pipeline, spend, suppliers, discovery and inventory",
 };
 
 export default function DashboardPage() {
   return (
     <Suspense fallback={<div className="p-8 text-gray-400 text-sm">Loading…</div>}>
-      <DashboardClient />
+      <ExecutiveDashboard />
     </Suspense>
   );
 }
