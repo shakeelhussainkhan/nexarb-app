@@ -1,7 +1,7 @@
 // Money module — pure core.
 //
 // Event → row mapping for the Amazon sales / fees / disbursement
-// ingestion (SP-API Orders v0 + Finances v0). No network, no database,
+// ingestion (SP-API Orders v2026-01-01 + Finances v0). No network, no database,
 // no env, no imports: the sync route (lib/spapi/finances.ts) and the
 // offline harness (scripts/verify-money.mjs) exercise every rule here.
 //
@@ -147,8 +147,9 @@ export interface SyncWindow {
 }
 
 const DAY_MS = 86400000;
-// Orders v0 rejects a CreatedBefore that is in the future / immediate
-// present, so the window always ends a few minutes behind "now".
+// SP-API rejects a createdBefore that is in the future / immediate
+// present (Orders v2026-01-01 requires it to be at least two minutes
+// before the request), so the window always ends a few minutes behind "now".
 const RECENCY_BUFFER_MS = 3 * 60 * 1000;
 
 export function resolveWindow(
@@ -378,6 +379,118 @@ export function attributeFees(
 /** Return new row objects with `fees` filled from attributeFees output (0 when none). */
 export function applyFeesToRows(rows: SaleRowDraft[], feesByKey: Map<string, number>): SaleRowDraft[] {
   return rows.map((r) => ({ ...r, fees: feesByKey.get(saleKey(r.amazonOrderId, r.asin)) ?? 0 }));
+}
+
+// --- Orders API v2026-01-01 → lite shapes -------------------------------------
+//
+// Orders v0 is deprecated (Amazon's schedule removes it 2027-03-27);
+// the sync now reads Orders v2026-01-01 `searchOrders`, which
+// consolidates getOrders + getOrderItems into one call: items ride on
+// each order, gated by the `includedData` parameter. The translator
+// below maps the new payload onto the SpOrderLite / SpOrderItemLite
+// contract the rest of this core already speaks. Field mapping per
+// Amazon's official Orders API Migration Guide:
+//   orderId                        -> AmazonOrderId
+//   createdTime                    -> PurchaseDate
+//   fulfillment.fulfillmentStatus  -> OrderStatus (values re-cased:
+//                                      SHIPPED -> Shipped, CANCELLED -> Canceled, ...)
+//   orderItems[].orderItemId       -> OrderItemId
+//   orderItems[].product.asin      -> ASIN
+//   orderItems[].product.sellerSku -> SellerSKU
+//   orderItems[].quantityOrdered   -> QuantityOrdered
+//   orderItems[].fulfillment.quantityFulfilled -> QuantityShipped
+//                                      (requires includedData=FULFILLMENT)
+//   orderItems[].proceeds.breakdowns[type=ITEM].subtotal -> ItemPrice
+//                                      (line total for QuantityOrdered units;
+//                                       requires includedData=PROCEEDS)
+// v2026-01-01 Money is { amount, currencyCode } (camelCase; `amount`
+// is a string in Amazon's published model examples), unlike the v0 /
+// Finances v0 { Amount, CurrencyCode } shape moneyAmount parses.
+
+export interface SpMoney2026 {
+  amount?: string | number;
+  currencyCode?: string;
+}
+
+export interface SpProceedsBreakdown2026 {
+  type?: string;
+  subtotal?: SpMoney2026;
+}
+
+export interface SpOrderItem2026 {
+  orderItemId?: string;
+  quantityOrdered?: number;
+  product?: { asin?: string; sellerSku?: string };
+  fulfillment?: { quantityFulfilled?: number };
+  proceeds?: { breakdowns?: SpProceedsBreakdown2026[] };
+}
+
+export interface SpOrder2026 {
+  orderId?: string;
+  createdTime?: string;
+  fulfillment?: { fulfillmentStatus?: string };
+  orderItems?: SpOrderItem2026[];
+}
+
+/** Parse an Orders v2026-01-01 Money ({ amount, currencyCode }). Null when absent/unparseable. */
+export function moneyAmount2026(m: SpMoney2026 | undefined | null): number | null {
+  if (!m || m.amount === undefined || m.amount === null) return null;
+  const n = typeof m.amount === "number" ? m.amount : Number.parseFloat(String(m.amount));
+  return Number.isFinite(n) ? n : null;
+}
+
+const FULFILLMENT_STATUS_TO_V0: Record<string, string> = {
+  SHIPPED: "Shipped",
+  PARTIALLY_SHIPPED: "PartiallyShipped",
+  CANCELLED: "Canceled",
+  PENDING: "Pending",
+  PENDING_AVAILABILITY: "PendingAvailability",
+  UNSHIPPED: "Unshipped",
+  UNFULFILLABLE: "Unfulfillable",
+  INVOICE_UNCONFIRMED: "InvoiceUnconfirmed",
+};
+
+/**
+ * Translate v2026-01-01 orders into the lite contract. ItemPrice is
+ * the ITEM proceeds breakdown subtotal — the v0 ItemPrice equivalent
+ * (a line total for the ordered quantity). Multiple ITEM breakdowns
+ * (not expected) are summed; an item with no ITEM breakdown keeps
+ * ItemPrice undefined so buildSaleRows counts it as missing-price
+ * rather than inventing $0. An order without an orderId is dropped.
+ */
+export function mapOrders2026(orders: SpOrder2026[]): { orders: SpOrderLite[]; items: SpOrderItemLite[] } {
+  const liteOrders: SpOrderLite[] = [];
+  const liteItems: SpOrderItemLite[] = [];
+  for (const o of orders) {
+    if (!o.orderId) continue;
+    const rawStatus = o.fulfillment?.fulfillmentStatus;
+    liteOrders.push({
+      AmazonOrderId: o.orderId,
+      PurchaseDate: o.createdTime,
+      OrderStatus: rawStatus ? (FULFILLMENT_STATUS_TO_V0[rawStatus] ?? rawStatus) : undefined,
+    });
+    for (const it of o.orderItems ?? []) {
+      let itemTotal: number | null = null;
+      let itemCurrency: string | undefined;
+      for (const b of it.proceeds?.breakdowns ?? []) {
+        if (b.type !== "ITEM") continue;
+        const amt = moneyAmount2026(b.subtotal);
+        if (amt === null) continue;
+        itemTotal = (itemTotal ?? 0) + amt;
+        itemCurrency = b.subtotal?.currencyCode ?? itemCurrency;
+      }
+      liteItems.push({
+        AmazonOrderId: o.orderId,
+        OrderItemId: it.orderItemId,
+        ASIN: it.product?.asin,
+        SellerSKU: it.product?.sellerSku,
+        QuantityOrdered: it.quantityOrdered,
+        QuantityShipped: it.fulfillment?.quantityFulfilled,
+        ItemPrice: itemTotal === null ? undefined : { Amount: itemTotal, CurrencyCode: itemCurrency },
+      });
+    }
+  }
+  return { orders: liteOrders, items: liteItems };
 }
 
 // --- Financial event groups → payout rows -------------------------------------------------
