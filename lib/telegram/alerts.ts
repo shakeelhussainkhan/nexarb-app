@@ -8,6 +8,11 @@ import type { DealCheckTrace } from "@/lib/engine/dealcheck";
 import { getSupabaseAdmin } from "@/lib/supabase";
 import { supabaseIsConfigured } from "@/lib/engine/guards";
 import { suggestListPrice } from "@/lib/engine/repricing";
+import {
+  decideBuyAlert,
+  eligibilityGateLabel,
+  type BuyAlertSnapshot,
+} from "@/lib/telegram/buyAlertCore";
 
 /** A BUY trace plus an optional human-friendly title for the alert header. */
 export interface BuyAlertInput extends DealCheckTrace {
@@ -17,6 +22,9 @@ export interface BuyAlertInput extends DealCheckTrace {
 export interface AlertResult {
   ok: boolean;
   error?: string;
+  /** BUY alerts only: true when dedupe suppressed a repeat of an unchanged
+   * signal. Not an error — the caller counts it separately. */
+  suppressed?: boolean;
 }
 
 export function escapeHtml(value: string): string {
@@ -46,11 +54,25 @@ export function formatBuyAlertMessage(trace: BuyAlertInput): string {
     pricing.suggested !== null
       ? `List @ ${money(pricing.suggested)} (floor ${money(pricing.floor)})\n`
       : `Pricing: ${escapeHtml(pricing.reasoning)}\n`;
+  // Eligibility gate: a non-SELLABLE deal must never read as a plain BUY.
+  // Gated deals get a yellow header naming the gate plus a line with the
+  // eligibility state and Amazon's own reason. Clean deals are unchanged.
+  const gateLabel = eligibilityGateLabel(trace.eligibility.state);
+  const headerLine = gateLabel
+    ? `🟡 BUY SIGNAL — ${gateLabel} — ${escapeHtml(headline)}\n`
+    : `🟢 BUY SIGNAL — ${escapeHtml(headline)}\n`;
+  const gateReason = (trace.eligibility.reasons ?? []).find(
+    (r) => typeof r === "string" && r.trim().length > 0
+  );
+  const gateLine = gateLabel
+    ? `Eligibility: ${escapeHtml(trace.eligibility.state)}${gateReason ? ` — ${escapeHtml(gateReason)}` : ""}\n`
+    : "";
   return (
-    `🟢 BUY SIGNAL — ${escapeHtml(headline)}\n` +
+    headerLine +
     `Buy ${money(buy)} → Sell ${money(sell)}\n` +
     `Profit ${money(profit)} (${margin.toFixed(1)}%)\n` +
     pricingLine +
+    gateLine +
     `ASIN: ${escapeHtml(trace.asin)}\n` +
     `https://www.amazon.com/dp/${trace.asin}`
   );
@@ -99,7 +121,95 @@ async function sendToChatId(
   }
 }
 
-/** Send a BUY-signal alert for one trace. Never throws. */
+type SupabaseAdmin = ReturnType<typeof getSupabaseAdmin>;
+
+/** The signal snapshot an alert decision is made against. */
+function buyAlertSnapshot(trace: BuyAlertInput): BuyAlertSnapshot {
+  return {
+    verdict: trace.verdict.state,
+    sellPrice: trace.verdict.realisticPrice,
+    eligibility: trace.eligibility.state,
+  };
+}
+
+/** Best-effort read of the last DELIVERED BUY-alert snapshot (migration 026
+ * columns on watchlist). Returns null when never alerted AND on any failure
+ * (missing migration, DB hiccup) — infra problems degrade to "alert as
+ * before", never to suppression. Never throws. */
+async function fetchLastBuyAlertState(
+  admin: SupabaseAdmin,
+  asin: string
+): Promise<BuyAlertSnapshot | null> {
+  try {
+    const { data, error } = await admin
+      .from("watchlist")
+      .select("last_buy_alert_at, last_buy_alert_verdict, last_buy_alert_sell_price, last_buy_alert_eligibility")
+      .eq("asin", asin)
+      .maybeSingle();
+    if (error || !data) return null;
+    const row = data as {
+      last_buy_alert_at: string | null;
+      last_buy_alert_verdict: string | null;
+      last_buy_alert_sell_price: number | string | null;
+      last_buy_alert_eligibility: string | null;
+    };
+    if (!row.last_buy_alert_at || row.last_buy_alert_sell_price === null) return null;
+    return {
+      verdict: row.last_buy_alert_verdict ?? "BUY",
+      sellPrice: Number(row.last_buy_alert_sell_price),
+      eligibility: row.last_buy_alert_eligibility ?? "UNKNOWN",
+    };
+  } catch {
+    return null;
+  }
+}
+
+/** Verdict of the previous persisted deal check for this ASIN (the newest
+ * row is the current scan's own check, persisted before alerts are sent).
+ * Null when there is no earlier check or the read fails. Never throws. */
+async function fetchPreviousCheckVerdict(
+  admin: SupabaseAdmin,
+  asin: string
+): Promise<string | null> {
+  try {
+    const { data, error } = await admin
+      .from("deal_checks")
+      .select("verdict")
+      .eq("asin", asin)
+      .order("checked_at", { ascending: false })
+      .limit(2);
+    if (error || !data || data.length < 2) return null;
+    const verdict = (data[1] as { verdict: string | null }).verdict;
+    return typeof verdict === "string" ? verdict : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Record the delivered alert's snapshot so later scans can dedupe against
+ * it. Best-effort: errors are swallowed (worst case one repeat alert). */
+async function recordBuyAlertState(
+  admin: SupabaseAdmin,
+  trace: BuyAlertInput
+): Promise<void> {
+  try {
+    await admin
+      .from("watchlist")
+      .update({
+        last_buy_alert_at: new Date().toISOString(),
+        last_buy_alert_verdict: trace.verdict.state,
+        last_buy_alert_sell_price: trace.verdict.realisticPrice,
+        last_buy_alert_eligibility: trace.eligibility.state,
+      })
+      .eq("asin", trace.asin);
+  } catch {
+    // Swallowed deliberately — see above.
+  }
+}
+
+/** Send a BUY-signal alert for one trace. Never throws. Repeat alerts for
+ * an unchanged signal are suppressed via the migration 026 dedupe state
+ * and surface as { ok: false, suppressed: true }. */
 export async function sendBuyAlert(
   trace: BuyAlertInput,
   env: NodeJS.ProcessEnv = process.env
@@ -113,6 +223,25 @@ export async function sendBuyAlert(
       return { ok: false, error: "No Telegram chat ID configured (connect Telegram first)" };
     }
 
+    // Dedupe gate (best-effort end to end): skip the send when the last
+    // delivered alert carried the same verdict, eligibility, and a sell
+    // price within the material-move band. State is only recorded AFTER
+    // a successful send below, so a failed send never loses an alert.
+    let admin: SupabaseAdmin | null = null;
+    if (supabaseIsConfigured(env)) {
+      admin = getSupabaseAdmin();
+      const [lastAlerted, previousVerdict] = await Promise.all([
+        fetchLastBuyAlertState(admin, trace.asin),
+        fetchPreviousCheckVerdict(admin, trace.asin),
+      ]);
+      const decision = decideBuyAlert({
+        lastAlerted,
+        previousVerdict,
+        current: buyAlertSnapshot(trace),
+      });
+      if (!decision.shouldAlert) return { ok: false, suppressed: true };
+    }
+
     const text = formatBuyAlertMessage(trace);
     const failures: string[] = [];
     let sent = 0;
@@ -123,6 +252,9 @@ export async function sendBuyAlert(
     }
 
     if (sent === 0) return { ok: false, error: failures.join("; ") || "send failed" };
+    // Delivered (fully or partially): advance the dedupe state so the next
+    // scan can tell an unchanged repeat from a genuinely changed signal.
+    if (admin) await recordBuyAlertState(admin, trace);
     if (failures.length > 0) {
       // Partial success still counts as delivered; surface the failures.
       return { ok: true, error: `partial delivery: ${failures.join("; ")}` };
