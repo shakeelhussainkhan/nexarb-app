@@ -34,11 +34,16 @@ export async function POST(req: Request): Promise<NextResponse> {
   }
 
   // Telegram BUY alerts — notifications only, nothing purchases.
+  // Repeat alerts for unchanged signals come back suppressed (dedupe,
+  // migration 026) and are counted separately — they are not failures.
   let alertsSent = 0;
+  let alertsSuppressed = 0;
   const errors: string[] = [];
   for (const trace of scan.buyTraces) {
     const res = await sendBuyAlert(trace);
-    if (res.ok) {
+    if (res.suppressed) {
+      alertsSuppressed++;
+    } else if (res.ok) {
       alertsSent++;
     } else {
       errors.push(`alert failed for ${trace.asin}: ${res.error ?? "unknown error"}`);
@@ -51,6 +56,7 @@ export async function POST(req: Request): Promise<NextResponse> {
     checked: scan.checked,
     buys: scan.buys,
     alertsSent,
+    alertsSuppressed,
     priceDropAlertsSent: scan.priceDropAlertsSent,
     approvalAlertsSent: scan.approvalAlertsSent,
     errors: [...errors, ...scan.priceDropErrors, ...scan.approvalErrors],
