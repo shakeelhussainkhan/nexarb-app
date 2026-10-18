@@ -77,6 +77,11 @@ export interface EvaluateOffersResult {
   candidates: number;
   watch: number;
   pass: number;
+  /** Offers the suspect-multipack guard suppressed this pass
+   * (verdict "pass" with a "suspect_multipack:" reason — a subset
+   * of the pass count, broken out like the scan routes'
+   * alertsSuppressed so the suppression is visible, not silent). */
+  suspectSuppressed: number;
   errors: string[];
 }
 
@@ -85,7 +90,7 @@ export async function evaluateSupplierOffers(opts: {
   limit?: number;
   refresh?: boolean;
 } = {}): Promise<EvaluateOffersResult> {
-  const result: EvaluateOffersResult = { processed: 0, candidates: 0, watch: 0, pass: 0, errors: [] };
+  const result: EvaluateOffersResult = { processed: 0, candidates: 0, watch: 0, pass: 0, suspectSuppressed: 0, errors: [] };
   const cfg = spApiConfigFromEnv(process.env);
   if (!cfg) {
     result.errors.push("SP-API not configured — evaluation skipped.");
@@ -183,6 +188,7 @@ export async function evaluateSupplierOffers(opts: {
       if (bucket === "candidate") result.candidates++;
       else if (bucket === "watch") result.watch++;
       else result.pass++;
+      if (evaluation.suspectMultipack) result.suspectSuppressed++;
     } catch (e) {
       result.errors.push(
         `${row.supplier_sku}: evaluation failed: ${e instanceof Error ? e.message : String(e)}`
