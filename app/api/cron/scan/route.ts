@@ -25,6 +25,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   let checked = 0;
   let buys = 0;
   let alertsSent = 0;
+  let alertsSuppressed = 0;
   let priceDropAlertsSent = 0;
 
   try {
@@ -35,7 +36,9 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     errors.push(...scan.priceDropErrors);
     for (const trace of scan.buyTraces) {
       const res = await sendBuyAlert(trace);
-      if (res.ok) {
+      if (res.suppressed) {
+        alertsSuppressed++;
+      } else if (res.ok) {
         alertsSent++;
       } else {
         errors.push(`alert failed for ${trace.asin}: ${res.error ?? "unknown error"}`);
@@ -44,12 +47,12 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   } catch (err) {
     errors.push(err instanceof Error ? err.message : "Scan failed");
     return NextResponse.json(
-      { success: false, checked, buys, alertsSent, priceDropAlertsSent, errors },
+      { success: false, checked, buys, alertsSent, alertsSuppressed, priceDropAlertsSent, errors },
       { status: 503 }
     );
   }
 
-  return NextResponse.json({ success: true, checked, buys, alertsSent, priceDropAlertsSent, errors });
+  return NextResponse.json({ success: true, checked, buys, alertsSent, alertsSuppressed, priceDropAlertsSent, errors });
 }
 
 // Vercel Cron Jobs invoke the path with GET, so the scheduled job lands here.
