@@ -31,6 +31,18 @@
 // pack check is possible and the price is treated as a single unit
 // exactly as before (the verify-evaluate.mjs contract is unchanged).
 //
+// SUSPECT-MULTIPACK GUARD (lib/suppliers/suspectMultipackCore.ts):
+// normalization only sees packs the listing TITLE declares; on the
+// surviving mirages the pack count lives in the listing body, so the
+// price is treated as a single unit and a multipack total gets paired
+// with a per-unit cost. The guard fingerprints that shape — Amazon
+// price ÷ supplier unit cost still > 4× after any CONFIRMED pack
+// division — and forces "pass" with a "suspect_multipack:" reason:
+// a >4× unexplained spread on staples is an undeclared case/pack
+// mismatch, not arbitrage (14 of 15 hand-vetted 2026-10-17 mirages).
+// The guard runs only when the pack check ran (the caller supplied
+// pack inputs); the legacy no-input path is untouched.
+//
 // VERDICT RULES (the whole contract — keep in sync with the harness):
 //   candidate — freight-aware net >= $5/unit AND freight-aware margin
 //               >= 20% AND velocity is not "weak" AND the supplier has
@@ -40,8 +52,11 @@
 //               least one candidate condition fails: thin net/margin, weak
 //               or unproven velocity, or supplier out of stock.
 //   pass      — everything else: unprofitable after freight, no usable
-//               Amazon price, or eligibility BLOCKED (the account cannot
-//               list the ASIN at all — no economics rescue that).
+//               Amazon price, eligibility BLOCKED (the account cannot
+//               list the ASIN at all — no economics rescue that), or
+//               suspect_multipack (unexplained >4× price/cost ratio —
+//               the economics are computed on a mismatched unit basis
+//               and are not candidate-grade, however good they look).
 //   Eligibility APPROVAL_REQUIRED never blocks "candidate": the brand
 //   approval is applied for WITH the distributor invoice, and an invoice
 //   from this very order is the qualifying document — the verdict carries
@@ -64,6 +79,7 @@ import {
   analyzeListingPack,
   type PackNormalizationStatus,
 } from "./packNormalizeCore";
+import { detectSuspectMultipack } from "./suspectMultipackCore";
 
 // ---------------------------------------------------------------------------
 // Inputs / outputs
@@ -149,6 +165,15 @@ export interface OfferEvaluation {
   /** Per-unit Amazon price the economics ran on (amazonPrice ÷
    * packQty); null when refused or when the price was unusable. */
   unitAmazonPrice: number | null;
+  /** True when the suspect-multipack guard suppressed this offer:
+   * the price/cost ratio stayed > 4× after any confirmed pack
+   * division, so the verdict is "pass" regardless of the (mirage)
+   * economics. Always false on the legacy no-pack-inputs path. */
+  suspectMultipack: boolean;
+  /** The guard's normalized price/cost ratio (amazonPrice ÷ packQty
+   * ÷ supplier cost), 2dp; null when no ratio could be judged or
+   * the guard did not run. */
+  suspectRatio: number | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -284,6 +309,19 @@ export function evaluateOffer(
       ? pack.unitAmazonPrice
       : signals.amazonPrice;
 
+  // Suspect-multipack guard — judged on the RAW stored price against
+  // the per-unit supplier cost, with only a CONFIRMED pack (the pack
+  // analysis above) allowed to explain the spread. Runs only when the
+  // pack check ran; see the header note.
+  const suspect = pack
+    ? detectSuspectMultipack({
+        amazonPrice: signals.amazonPrice,
+        supplierUnitCost: offer.costPrice,
+        packQty: pack.packQty,
+        packConfidence: pack.pack.confidence,
+      })
+    : null;
+
   const base = estimateSupplierNet(
     {
       costPrice: offer.costPrice,
@@ -329,6 +367,8 @@ export function evaluateOffer(
       packQty: pack.packQty,
       packStatus: pack.status,
       unitAmazonPrice: null,
+      suspectMultipack: suspect?.suspect ?? false,
+      suspectRatio: suspect?.normalizedRatio ?? null,
     };
   }
 
@@ -365,6 +405,8 @@ export function evaluateOffer(
       packQty: pack?.packQty ?? 1,
       packStatus: pack?.status ?? "ok",
       unitAmazonPrice: pack ? pack.unitAmazonPrice : signals.amazonPrice,
+      suspectMultipack: suspect?.suspect ?? false,
+      suspectRatio: suspect?.normalizedRatio ?? null,
     };
   }
 
@@ -406,7 +448,15 @@ export function evaluateOffer(
 
   // ---- Verdict (rules in the file header) --------------------------------
   let verdict: EvalVerdict;
-  if (signals.eligibility === "BLOCKED") {
+  if (suspect?.suspect) {
+    // The spread is an undeclared case/pack mismatch, not arbitrage:
+    // the economics above were computed on a mismatched unit basis,
+    // so no score they produce is candidate-grade. Pass, with the
+    // guard's reason on the record (the mirage numbers stay visible
+    // in the stored evaluation for the founder to audit).
+    verdict = "pass";
+    reasons.push(suspect.reason);
+  } else if (signals.eligibility === "BLOCKED") {
     verdict = "pass";
   } else if (
     freightNet >= CANDIDATE_MIN_NET &&
@@ -443,6 +493,8 @@ export function evaluateOffer(
   //   seasonal +10 when any seasonal group matches (bounded)
   // BLOCKED eligibility caps the total at 10: unlistable inventory is
   // never a shortlist item no matter how good the spreadsheet looks.
+  // A suspect-multipack suppression caps it the same way: the
+  // spreadsheet itself is the mirage.
   const marginScore = (clamp(freightMarginPct, 0, 50) / 50) * 40;
   const netScore = (clamp(freightNet, 0, 25) / 25) * 20;
   const velocityScore =
@@ -452,6 +504,7 @@ export function evaluateOffer(
   let score = Math.round(marginScore + netScore + velocityScore + stockScore + seasonalScore);
   score = clamp(score, 0, 100);
   if (signals.eligibility === "BLOCKED") score = Math.min(score, 10);
+  if (suspect?.suspect) score = Math.min(score, 10);
 
   return {
     verdict,
@@ -468,5 +521,7 @@ export function evaluateOffer(
     packQty: pack?.packQty ?? 1,
     packStatus: pack?.status ?? "ok",
     unitAmazonPrice: pack ? pack.unitAmazonPrice : signals.amazonPrice,
+    suspectMultipack: suspect?.suspect ?? false,
+    suspectRatio: suspect?.normalizedRatio ?? null,
   };
 }

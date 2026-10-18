@@ -207,8 +207,18 @@ for (const [name, upc, cost, amazonPrice, title, expected] of FIXTURES) {
   check("control single-unit: economics unchanged",
     near(withTitle.freightNet, legacy.freightNet) && near(withTitle.baseNet, legacy.baseNet),
     `${withTitle.freightNet} vs ${legacy.freightNet}`);
-  check("control single-unit: verdict unchanged (candidate)", withTitle.verdict === legacy.verdict && withTitle.verdict === "candidate",
-    `${withTitle.verdict} vs ${legacy.verdict}`);
+  // v3 suspect-multipack guard (lib/suppliers/suspectMultipackCore.ts):
+  // this control's ratio is $24.95 ÷ $4.49 = 5.56× with NO pack
+  // declaration — exactly the guard's fingerprint — so the with-title
+  // call is now intentionally suppressed (pass + suspectMultipack)
+  // while the legacy no-input call, where the guard cannot run, stays
+  // a candidate. The assertions this control exists for (normalization
+  // leaves single-unit economics and packQty untouched) are unchanged.
+  check("control single-unit: legacy verdict unchanged (candidate)", legacy.verdict === "candidate",
+    `got ${legacy.verdict}`);
+  check("control single-unit: title call suppressed by the suspect guard (v3)",
+    withTitle.verdict === "pass" && withTitle.suspectMultipack === true && hasReason(withTitle, "suspect_multipack:"),
+    `${withTitle.verdict}/${withTitle.suspectMultipack} | ${withTitle.reasons.join(" | ")}`);
   check("control single-unit: legacy call has NO pack reasons",
     !legacy.reasons.some((r) => r.startsWith("pack_")), legacy.reasons.join(" | "));
   check("control single-unit: no-declaration title flagged low-confidence",
